@@ -3,6 +3,7 @@ import asyncio
 import logging
 import threading
 import time
+from pathlib import Path
 
 from config import SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WEB_PORT
 from core.fastpath import FastPathEngine, setup_rules
@@ -323,7 +324,7 @@ class AgentOrchestrator:
         if expiring:
             names = [f["name"] for f in expiring]
             msg = f"提醒: {', '.join(names)} 今天过期"
-            tts(msg)
+            self.tts.speak(msg)
             self.db.log_event("food_reminder", msg)
             logger.info("食材到期提醒: %s", names)
 
@@ -338,8 +339,8 @@ class AgentOrchestrator:
             msg = f"室内{temp:.0f}°C 较冷, 建议穿外套"
         else:
             msg = f"室内{temp:.0f}°C, 体感舒适"
-        tts(msg)
+        self.tts.speak(msg)
         self.db.log_event("dress_advice", msg)
 
 
-from pathlib import Path
+
