@@ -67,7 +67,7 @@ UART_BAUD = 9600
 LLM_MODEL = os.getenv("AGENT_LLM", str(ROOT / "models/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf"))
 LLM_CTX_SIZE = 4096
 LLM_MAX_TOKENS = 512
-LLM_TEMPERATURE = 0.7
+LLM_TEMPERATURE = 0.0
 
 # ===== Agent =====
 AGENT = {

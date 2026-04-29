@@ -92,6 +92,10 @@ class CommandHandler:
         if not isinstance(tool_chain, list):
             tool_chain = []
 
+        # 兜底: LLM 未输出工具链时, 尝试正则提取食材指令
+        if not tool_chain and self._try_food_regex(text):
+            tool_chain = self._try_food_regex(text)
+
         # 执行工具
         actions = []
         if tool_chain:
@@ -157,6 +161,42 @@ class CommandHandler:
             except Exception:
                 pass
         return f"收到: {text[:60]}"
+
+
+def _try_food_regex(text: str) -> list[dict] | None:
+    """正则提取食材指令: 买了<name>[<数量>][<单位>][<日期>]到期"""
+    import datetime
+
+    t = text.strip()
+    # 模式1: "买了鸡蛋明天到期" / "买了牛奶5月20到期"
+    m = re.match(r'买(?:了)?(.+?)(?:(\d+)\s*(?:个|斤|袋|盒|瓶|包|箱|kg|g))?\s*(?:明天|(\d{1,2})月(\d{1,2})日?)?\s*(?:到期|过期)', t)
+    if m:
+        name = m.group(1).strip()
+        quantity = float(m.group(2)) if m.group(2) else 1
+        unit = "个"
+        if m.group(2):
+            unit_match = re.search(r'(\d+)\s*(个|斤|袋|盒|瓶|包|箱|kg|g)', t)
+            if unit_match:
+                unit = unit_match.group(2)
+        # 日期
+        today = datetime.date.today()
+        if '明天' in t:
+            expiry = (today + datetime.timedelta(days=1)).isoformat()
+        elif m.group(3) and m.group(4):
+            month, day = int(m.group(3)), int(m.group(4))
+            expiry = datetime.date(2026, month, day).isoformat()
+        else:
+            # 默认7天后过期
+            expiry = (today + datetime.timedelta(days=7)).isoformat()
+        return [{"tool": "add_food", "params": {"name": name, "expiry_date": expiry, "quantity": quantity, "unit": unit}}]
+
+    # 模式2: "冰箱里有什么" / "什么快过期了"
+    if any(kw in t for kw in ("冰箱里有什么", "有什么快过期", "什么快过期", "快过期", "快到期")):
+        if "快过期" in t or "快到期" in t or "过期" in t:
+            return [{"tool": "list_foods", "params": {"expiring_days": 3}}]
+        return [{"tool": "list_foods", "params": {}}]
+
+    return None
 
 
 def _parse_tool_chain(raw: str) -> list[dict]:

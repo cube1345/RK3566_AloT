@@ -172,6 +172,25 @@ class AgentOrchestrator:
         def query_event_log(hours: int = 24) -> list:
             return self.db.query_events(hours)
 
+        @registry.register(description="生成日报/总结: 最近24h传感器均值+事件摘要")
+        def generate_daily_report() -> str:
+            """日报: 传感器均值 + 事件摘要"""
+            lines = ["=== 家庭日报 ==="]
+            for sensor in ("co2", "temperature", "light"):
+                data = self.db.query_sensor(sensor, 24)
+                if data:
+                    vals = [d["value"] for d in data]
+                    avg = sum(vals) / len(vals)
+                    lines.append(f"{sensor}: 均值 {avg:.1f}")
+            events = self.db.query_events(24)
+            if events:
+                lines.append(f"事件: {len(events)} 条")
+                for e in events[:5]:
+                    lines.append(f"  {e.get('detail', '')[:40]}")
+            else:
+                lines.append("事件: 无")
+            return "\n".join(lines)
+
         # 通知
         @registry.register(description="TTS 语音播报")
         def tts(text: str):
