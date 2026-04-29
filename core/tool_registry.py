@@ -40,11 +40,8 @@ class ToolRegistry:
         return self._tools[name].fn(**kwargs)
 
     def execute_plan(self, plan: list[dict]) -> list[dict]:
-        """执行工具链, 无依赖的并行执行"""
+        """并行执行工具链 (所有工具并行, 后续可加依赖编排)"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        results = []
-        pending = []
 
         def _run_one(call: dict):
             return {
@@ -52,26 +49,9 @@ class ToolRegistry:
                 "result": self.execute(call["tool"], **call.get("params", {})),
             }
 
-        for call in plan:
-            has_dep = any(
-                call["tool"] in self._tools.get(prev["tool"], ToolDef("", None, "")).params_schema
-                for prev in pending
-            )
-            if has_dep and pending:
-                # 串行: 刷空当前批次
-                for r in pending:
-                    results.append(_run_one(r))
-                pending = []
-            pending.append(call)
-
-        # 并行执行剩余批次
-        if pending:
-            with ThreadPoolExecutor(max_workers=len(pending)) as pool:
-                futures = {pool.submit(_run_one, c): c for c in pending}
-                for f in as_completed(futures):
-                    results.append(f.result())
-
-        return results
+        with ThreadPoolExecutor(max_workers=min(len(plan) or 1, 8)) as pool:
+            futures = {pool.submit(_run_one, c): c for c in plan}
+            return [f.result() for f in as_completed(futures)]
 
     def list_tools(self) -> list[dict]:
         return [

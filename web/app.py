@@ -101,20 +101,16 @@ def api_food_remove():
 
 @app.route("/api/command", methods=["POST"])
 def api_command():
-    """用户指令入口"""
+    """用户指令入口 -> Agent 路由 -> LLM -> 工具执行"""
     text = request.json.get("text", "")
     if not text:
         return jsonify({"reply": ""})
 
-    # FastPath 先尝试 (通过规则引擎)
-    # TODO: BERT 意图分类路由
+    if orchestrator is None:
+        return jsonify({"reply": "系统未就绪", "actions": [], "agent": "", "llm_used": False})
 
-    # 默认回复
-    orchestrator.db.log_event("user_command", text)
-    return jsonify({
-        "reply": f"已收到: {text}",
-        "actions": [],
-    })
+    result = orchestrator.handle_command(text)
+    return jsonify(result)
 
 
 @app.route("/api/tools")

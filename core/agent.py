@@ -8,6 +8,7 @@ from config import SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WE
 from core.fastpath import FastPathEngine, setup_rules
 from core.tool_registry import registry
 from core.midpath import MidPathHandler
+from core.command_handler import CommandHandler
 from sensors.base import SensorManager
 from devices.manager import DeviceManager
 from devices.fan import FanDevice
@@ -55,7 +56,14 @@ class AgentOrchestrator:
         # 5. 尝试加载 LLM
         await self._init_llm()
 
-        # 6. 启动 Web Dashboard
+        # 6. 初始化命令处理器
+        self._cmd_handler = CommandHandler(
+            llm=self.llm if hasattr(self, 'llm') and self._llm_available else None,
+            db=self.db,
+            sensors=self.sensors,
+        )
+
+        # 7. 启动 Web Dashboard
         self._start_web()
 
         logger.info("Agent ZX 就绪")
@@ -91,6 +99,12 @@ class AgentOrchestrator:
         self._stop_web()
         self.db.close()
         logger.info("Agent ZX 已停止")
+
+    # ---- 公开接口 ----
+
+    def handle_command(self, text: str, history: list[dict] | None = None) -> dict:
+        """处理用户自然语言指令, 返回 {reply, actions, agent, llm_used}"""
+        return self._cmd_handler.handle(text, history)
 
     # ---- 内部 ----
 
