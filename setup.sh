@@ -1,22 +1,24 @@
 #!/bin/bash
-# Agent ZX 一键开发环境配置
+# Agent ZX 一键开发环境配置 (uv)
 set -e
 
 echo "=== Agent ZX 环境配置 ==="
-
-# 创建必要目录
 mkdir -p data models
 
-# 安装 Python 依赖
-pip install flask pyserial smbus2 pytest pytest-asyncio -q
+# 创建 uv 虚拟环境 + 安装依赖
+uv venv --python 3.11 2>/dev/null || true
+source .venv/bin/activate
+uv pip install flask pyserial smbus2 pytest pytest-asyncio requests -q
 
-# Mock 模式默认开启 (不需要硬件)
+# Mock 模式默认开启 (无需硬件)
 echo "AGENT_MOCK=1" > .env
 echo "AGENT_MOCK_WEATHER=1" >> .env
 
+echo ""
 echo "=== 完成 ==="
-echo "运行: python3 main.py"
-echo "Mock 模式: 无需硬件, 传感器数据模拟生成"
+echo "启动: source .venv/bin/activate && python main.py"
+echo "测试: source .venv/bin/activate && python -m pytest tests/ -v"
+echo "Web:   http://localhost:5000"
 echo ""
 echo "部署到 RK3588 前:"
 echo "  1. 下载模型到 models/"

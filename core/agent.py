@@ -1,13 +1,21 @@
 # Agent 编排器 — 主循环
 import asyncio
 import logging
+import threading
 import time
 
-from config import SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL
+from config import SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WEB_PORT
 from core.fastpath import FastPathEngine, setup_rules
 from core.tool_registry import registry
+from core.midpath import MidPathHandler
 from sensors.base import SensorManager
+from devices.manager import DeviceManager
+from devices.fan import FanDevice
+from devices.ac import ACDevice
+from devices.light import LightDevice
+from devices.purifier import AirPurifierDevice
 from knowledge.database import Database
+from tts.speaker import TTSEngine
 
 logger = logging.getLogger("agent")
 
@@ -16,10 +24,14 @@ class AgentOrchestrator:
     def __init__(self):
         self.fastpath = FastPathEngine()
         self.sensors = SensorManager()
+        self.devices = DeviceManager()
         self.db = Database()
+        self.tts = TTSEngine()
+        self.midpath = MidPathHandler()
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._llm_available = False
+        self._web_thread: threading.Thread = None
 
     async def start(self):
         logging.basicConfig(
@@ -34,11 +46,17 @@ class AgentOrchestrator:
         # 2. 初始化传感器
         self._init_sensors()
 
-        # 3. 配置规则引擎
+        # 3. 注册设备驱动
+        self._register_devices()
+
+        # 4. 配置规则引擎
         setup_rules(self.fastpath)
 
-        # 4. 尝试加载 LLM
+        # 5. 尝试加载 LLM
         await self._init_llm()
+
+        # 6. 启动 Web Dashboard
+        self._start_web()
 
         logger.info("Agent ZX 就绪")
 
@@ -69,6 +87,8 @@ class AgentOrchestrator:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self.sensors.cleanup_all()
+        self.devices.cleanup_all()
+        self._stop_web()
         self.db.close()
         logger.info("Agent ZX 已停止")
 
@@ -96,26 +116,22 @@ class AgentOrchestrator:
         def read_person_present() -> bool:
             return self.sensors.read("motion").value > 0.5
 
-        # 设备控制 (mock 实现)
+        # 设备控制
         @registry.register(description="风扇控制 0关-3高速")
         def set_fan(speed: int):
-            logger.info("执行: 风扇 → %s", ["关", "低速", "中速", "高速"][speed])
-            return f"风扇: {['关', '低速', '中速', '高速'][speed]}"
+            return self.devices.control("fan", "set", speed=speed)
 
         @registry.register(description="空调控制 mode=cool/dry/heat")
         def ac_control(mode: str, temp: int = 26, fan_speed: str = "auto"):
-            logger.info("执行: 空调 → %s %d°C 风量%s", mode, temp, fan_speed)
-            return f"空调: {mode} {temp}°C"
+            return self.devices.control("ac", mode, temp=temp, fan_speed=fan_speed)
 
         @registry.register(description="灯光控制 on/off, brightness=0-255")
         def set_light(state: str, brightness: int = 255):
-            logger.info("执行: 灯光 → %s 亮度%d", state, brightness)
-            return f"灯光: {state}"
+            return self.devices.control("light", state, brightness=brightness)
 
         @registry.register(description="空气净化 0关-3强")
         def set_air_purifier(level: int):
-            logger.info("执行: 净化 → %s", ["关", "低速", "中速", "高速"][level])
-            return f"净化: {['关', '低速', '中速', '高速'][level]}"
+            return self.devices.control("air_purifier", "set", level=level)
 
         # 食材管理
         @registry.register(description="食材入库: name, expiry_date(Y-m-d), storage")
@@ -145,7 +161,7 @@ class AgentOrchestrator:
         # 通知
         @registry.register(description="TTS 语音播报")
         def tts(text: str):
-            logger.info("TTS: %s", text)
+            self.tts.speak(text)
             return f"已播报: {text}"
 
         @registry.register(description="屏显通知")
@@ -188,6 +204,13 @@ class AgentOrchestrator:
             self.sensors.register(MotionSensor())
             logger.info("使用真实传感器")
 
+    def _register_devices(self):
+        self.devices.register(FanDevice())
+        self.devices.register(ACDevice())
+        self.devices.register(LightDevice())
+        self.devices.register(AirPurifierDevice())
+        logger.info("设备驱动注册完成")
+
     async def _init_llm(self):
         if not LLM_MODEL or not Path(LLM_MODEL).exists():
             logger.warning("LLM 模型未找到 (%s), SlowPath 降级为规则", LLM_MODEL)
@@ -200,6 +223,25 @@ class AgentOrchestrator:
         except Exception as e:
             logger.warning("LLM 加载失败: %s", e)
             self._llm_available = False
+
+    def _start_web(self):
+        try:
+            from web.app import app as web_app, init as web_init
+            web_init(self)
+            import threading
+            self._web_thread = threading.Thread(
+                target=web_app.run,
+                kwargs={"host": WEB_HOST, "port": WEB_PORT, "debug": False, "use_reloader": False},
+                daemon=True,
+            )
+            self._web_thread.start()
+            logger.info("Web Dashboard: http://%s:%d", WEB_HOST, WEB_PORT)
+        except Exception as e:
+            logger.warning("Web Dashboard 启动失败: %s", e)
+
+    def _stop_web(self):
+        # Flask 无原生优雅停止, daemon thread 随主进程退出
+        pass
 
     async def _poll_sensor(self, name: str, interval: int):
         while self._running:

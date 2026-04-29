@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent ZX 智能家居总控</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+.header { background: #1e293b; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
+.header h1 { font-size: 20px; font-weight: 600; }
+.header .badge { background: #059669; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 20px; }
+.card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+.card .label { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+.card .value { font-size: 32px; font-weight: 700; margin: 8px 0; }
+.card .unit { font-size: 14px; color: #94a3b8; }
+.card .status { display: inline-block; padding: 2px 10px; border-radius: 8px; font-size: 12px; }
+.status-ok { background: #065f46; color: #6ee7b7; }
+.status-warn { background: #78350f; color: #fcd34d; }
+.status-critical { background: #7f1d1d; color: #fca5a5; }
+.chart-container { padding: 0 20px 20px; }
+.chart-card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; margin-bottom: 16px; }
+.chart-card h3 { margin-bottom: 12px; font-size: 14px; color: #94a3b8; }
+.control-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; transition: .2s; }
+.btn-primary { background: #3b82f6; color: #fff; }
+.btn-primary:hover { background: #2563eb; }
+.btn-danger { background: #ef4444; color: #fff; }
+.btn-success { background: #059669; color: #fff; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.events { max-height: 300px; overflow-y: auto; }
+.event-item { padding: 8px 0; border-bottom: 1px solid #334155; font-size: 13px; display: flex; justify-content: space-between; }
+.event-time { color: #64748b; font-size: 11px; font-family: monospace; }
+.tab-bar { display: flex; gap: 4px; padding: 0 20px; }
+.tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: #94a3b8; font-size: 13px; }
+.tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+.panel { display: none; }
+.panel.active { display: block; }
+input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 8px 12px; border-radius: 8px; font-size: 14px; width: 100%; margin: 4px 0; }
+.food-table { width: 100%; border-collapse: collapse; }
+.food-table th, .food-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #334155; font-size: 13px; }
+.food-table th { color: #94a3b8; font-weight: 500; }
+.expiring { color: #fcd34d; } .expired { color: #ef4444; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🏠 Agent ZX</h1>
+  <div>
+    <span class="badge" id="statusBadge">运行中</span>
+  </div>
+</div>
+
+<!-- 概览卡片 -->
+<div class="grid" id="sensorGrid">
+  <div class="card"><div class="label">CO₂</div><div class="value" id="co2">--</div><div class="unit">ppm</div><div id="co2Status"></div></div>
+  <div class="card"><div class="label">温度</div><div class="value" id="temp">--</div><div class="unit">°C</div></div>
+  <div class="card"><div class="label">湿度</div><div class="value" id="humid">--</div><div class="unit">%</div></div>
+  <div class="card"><div class="label">光照</div><div class="value" id="light">--</div><div class="unit">lux</div></div>
+  <div class="card"><div class="label">人体</div><div class="value" id="motion">--</div><div class="unit" id="motionLabel"></div></div>
+  <div class="card">
+    <div class="label">设备状态</div>
+    <div style="margin-top:12px">
+      <div>💡 灯: <span id="devLight">--</span></div>
+      <div>🌀 风扇: <span id="devFan">--</span></div>
+      <div>❄️ 空调: <span id="devAc">--</span></div>
+      <div>🌬️ 净化: <span id="devPurifier">--</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 选项卡 -->
+<div class="tab-bar">
+  <div class="tab active" onclick="switchTab('env')">📊 环境曲线</div>
+  <div class="tab" onclick="switchTab('food')">🥘 食材管理</div>
+  <div class="tab" onclick="switchTab('events')">📋 事件日志</div>
+  <div class="tab" onclick="switchTab('command')">🎯 指令</div>
+</div>
+
+<!-- 环境曲线 -->
+<div class="panel active" id="panelEnv">
+  <div class="chart-container">
+    <div class="chart-card"><h3>CO₂ (ppm)</h3><canvas id="chartCo2" height="120"></canvas></div>
+    <div class="chart-card"><h3>温度 / 湿度</h3><canvas id="chartTemp" height="120"></canvas></div>
+  </div>
+</div>
+
+<!-- 食材管理 -->
+<div class="panel" id="panelFood">
+  <div class="chart-container">
+    <div class="chart-card">
+      <h3>新增食材</h3>
+      <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 8px; align-items: end;">
+        <input id="foodName" placeholder="食材名称">
+        <input id="foodExpiry" type="date">
+        <select id="foodStorage"><option>冷藏</option><option>冷冻</option><option>常温</option></select>
+        <input id="foodQty" type="number" value="1" min="1">
+        <button class="btn btn-success" onclick="addFood()">添加</button>
+      </div>
+    </div>
+    <div class="chart-card">
+      <table class="food-table">
+        <thead><tr><th>名称</th><th>数量</th><th>位置</th><th>到期</th><th>操作</th></tr></thead>
+        <tbody id="foodTable"></tbody>
+      </table>
+      <button class="btn btn-sm btn-primary" style="margin-top:8px" onclick="loadFoods()">刷新</button>
+      <button class="btn btn-sm" style="margin-left:4px; margin-top:8px" onclick="loadFoods(3)">即将过期</button>
+    </div>
+  </div>
+</div>
+
+<!-- 事件日志 -->
+<div class="panel" id="panelEvents">
+  <div class="chart-container">
+    <div class="chart-card">
+      <div class="events" id="eventList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 指令 -->
+<div class="panel" id="panelCommand">
+  <div class="chart-container">
+    <div class="chart-card">
+      <div style="display:flex; gap:8px;">
+        <input id="cmdInput" placeholder="输入指令..." onkeydown="if(event.key==='Enter') sendCommand()">
+        <button class="btn btn-primary" onclick="sendCommand()">发送</button>
+      </div>
+      <div id="cmdReply" style="margin-top:12px; padding:12px; background:#0f172a; border-radius:8px; min-height:60px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Tab 切换 =====
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
+  document.getElementById('panel' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
+}
+
+// ===== Charts =====
+const ctxCo2 = document.getElementById('chartCo2').getContext('2d');
+const ctxTemp = document.getElementById('chartTemp').getContext('2d');
+
+const chartCo2 = new Chart(ctxCo2, {
+  type: 'line', data: { labels: [], datasets: [{
+    label: 'CO₂', data: [], borderColor: '#3b82f6', tension: 0.3, fill: false, pointRadius: 1,
+  }]},
+  options: { responsive: true, maintainAspectRatio: false,
+    scales: { x: { ticks: { color: '#64748b', maxTicksLimit: 6 } }, y: { ticks: { color: '#64748b' } } },
+    plugins: { legend: { display: false } } }
+});
+
+const chartTemp = new Chart(ctxTemp, {
+  type: 'line', data: { labels: [], datasets: [
+    { label: '温度', data: [], borderColor: '#f97316', tension: 0.3, fill: false, pointRadius: 1 },
+    { label: '湿度', data: [], borderColor: '#06b6d4', tension: 0.3, fill: false, pointRadius: 1, yAxisID: 'y1' },
+  ]},
+  options: { responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { ticks: { color: '#64748b', maxTicksLimit: 6 } },
+      y: { ticks: { color: '#64748b' }, position: 'left' },
+      y1: { ticks: { color: '#64748b' }, position: 'right', grid: { drawOnChartArea: false } },
+    },
+    plugins: { legend: { labels: { color: '#94a3b8' } } } }
+});
+
+// ===== 数据更新 =====
+async function fetchJSON(url) {
+  const r = await fetch(url); return r.json();
+}
+
+function formatTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+}
+
+function formatDate(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+
+async function updateSensors() {
+  const d = await fetchJSON('/api/sensors');
+  const co2 = d.co2?.value;
+  document.getElementById('co2').textContent = co2 != null ? Math.round(co2) : '--';
+  document.getElementById('temp').textContent = d.temperature?.value != null ? d.temperature.value.toFixed(1) : '--';
+  document.getElementById('humid').textContent = d.humidity?.value != null ? d.humidity.value.toFixed(0) : '--';
+  document.getElementById('light').textContent = d.light?.value != null ? Math.round(d.light.value) : '--';
+
+  const present = d.motion?.value > 0.5;
+  document.getElementById('motion').textContent = present ? '👤' : '⬜';
+  document.getElementById('motionLabel').textContent = present ? '有人' : '无人';
+
+  // CO₂ 状态
+  const statusEl = document.getElementById('co2Status');
+  if (co2 != null) {
+    if (co2 > 2000) statusEl.innerHTML = '<span class="status status-critical">🔴 紧急</span>';
+    else if (co2 > 1200) statusEl.innerHTML = '<span class="status status-warn">🟠 偏高</span>';
+    else if (co2 > 800) statusEl.innerHTML = '<span class="status status-warn">🟡 注意</span>';
+    else statusEl.innerHTML = '<span class="status status-ok">🟢 正常</span>';
+  }
+}
+
+async function updateDevices() {
+  const d = await fetchJSON('/api/devices');
+  document.getElementById('devLight').textContent = d.light?.state || '--';
+  document.getElementById('devFan').textContent = d.fan?.state || '--';
+  document.getElementById('devAc').textContent = d.ac?.state || '--';
+  document.getElementById('devPurifier').textContent = d.purifier?.state || '--';
+}
+
+async function updateCharts() {
+  const co2data = await fetchJSON('/api/sensor_log?sensor=co2&hours=6');
+  const tempdata = await fetchJSON('/api/sensor_log?sensor=temperature&hours=6');
+  const humidData = await fetchJSON('/api/sensor_log?sensor=humidity&hours=6');
+
+  const co2Points = co2data.slice(-60).map(p => ({ x: formatTime(p.timestamp), y: p.value }));
+  const tempPoints = tempdata.slice(-60).map(p => ({ x: formatTime(p.timestamp), y: p.value }));
+  const humidPoints = humidData.slice(-60).map(p => ({ x: formatTime(p.timestamp), y: p.value }));
+
+  chartCo2.data.labels = co2Points.map(p => p.x);
+  chartCo2.data.datasets[0].data = co2Points.map(p => p.y);
+  chartCo2.update('none');
+
+  chartTemp.data.labels = tempPoints.map(p => p.x);
+  chartTemp.data.datasets[0].data = tempPoints.map(p => p.y);
+  chartTemp.data.datasets[1].data = humidPoints.map(p => p.y);
+  chartTemp.update('none');
+}
+
+async function loadEvents() {
+  const events = await fetchJSON('/api/events?hours=24');
+  const el = document.getElementById('eventList');
+  el.innerHTML = events.slice(0, 50).map(e =>
+    `<div class="event-item">${e.detail || e.type} <span class="event-time">${formatDate(e.timestamp)}</span></div>`
+  ).join('');
+}
+
+async function loadFoods(expiring) {
+  let url = '/api/foods';
+  if (expiring) url += `?expiring=${expiring}`;
+  const foods = await fetchJSON(url);
+  const today = new Date();
+  const el = document.getElementById('foodTable');
+  el.innerHTML = foods.map(f => {
+    const expiry = new Date(f.expiry_date);
+    const daysLeft = Math.ceil((expiry - today) / (1000*86400));
+    const cls = daysLeft < 0 ? 'expired' : daysLeft <= 3 ? 'expiring' : '';
+    return `<tr class="${cls}">
+      <td>${f.name}</td><td>${f.quantity}${f.unit || ''}</td>
+      <td>${f.storage}</td>
+      <td>${f.expiry_date} ${daysLeft < 0 ? '(已过期)' : daysLeft <= 3 ? `(剩${daysLeft}天)` : ''}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="removeFood(${f.id})">删</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function addFood() {
+  const name = document.getElementById('foodName').value;
+  const expiry = document.getElementById('foodExpiry').value;
+  const storage = document.getElementById('foodStorage').value;
+  const qty = document.getElementById('foodQty').value;
+  if (!name || !expiry) return alert('请填写食材名称和到期日');
+  await fetch('/api/foods/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, expiry_date: expiry, storage, quantity: parseInt(qty)}),
+  });
+  document.getElementById('foodName').value = '';
+  loadFoods();
+}
+
+async function removeFood(id) {
+  await fetch('/api/foods/remove', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id}),
+  });
+  loadFoods();
+}
+
+async function sendCommand() {
+  const input = document.getElementById('cmdInput');
+  const text = input.value.trim();
+  if (!text) return;
+  const r = await fetch('/api/command', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text}),
+  });
+  const data = await r.json();
+  document.getElementById('cmdReply').innerHTML = `<div style="color:#94a3b8">你: ${text}</div>
+    <div style="margin-top:8px; color:#6ee7b7">Agent: ${data.reply}</div>`;
+  input.value = '';
+  loadEvents();
+}
+
+// ===== 定时刷新 =====
+setInterval(updateSensors, 3000);
+setInterval(updateDevices, 5000);
+setInterval(loadEvents, 10000);
+setInterval(updateCharts, 30000);
+
+// 首次加载
+updateSensors(); updateDevices(); loadEvents(); loadFoods();
+setTimeout(updateCharts, 1000);
+</script>
+</body>
+</html>
