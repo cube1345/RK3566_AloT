@@ -7,3 +7,4 @@ models/
 .env
 .claude/
 .venv/
+agent_zx.log

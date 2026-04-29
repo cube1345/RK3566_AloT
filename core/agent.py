@@ -265,7 +265,7 @@ class AgentOrchestrator:
             await asyncio.sleep(15)  # 启动后15s 模拟一次
             if self._running:
                 logger.info("🔔 模拟: 外卖按键触发")
-                tts("有客到")
+                self.tts.speak("有客到")
                 self.db.log_event("doorbell", "外卖按键触发")
 
         # 真实 GPIO 模式 (后续实现)

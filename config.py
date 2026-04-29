@@ -64,7 +64,7 @@ UART_DEV = "/dev/ttyS0"  # MH-Z19B
 UART_BAUD = 9600
 
 # ===== LLM =====
-LLM_MODEL = os.getenv("AGENT_LLM", "models/qwen2.5-1.5b-int4.gguf")
+LLM_MODEL = os.getenv("AGENT_LLM", str(ROOT / "models/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf"))
 LLM_CTX_SIZE = 4096
 LLM_MAX_TOKENS = 512
 LLM_TEMPERATURE = 0.7
