@@ -93,8 +93,11 @@ class CommandHandler:
             tool_chain = []
 
         # 兜底: LLM 未输出工具链时, 尝试正则提取食材指令
-        if not tool_chain and self._try_food_regex(text):
-            tool_chain = self._try_food_regex(text)
+        # 兜底: LLM 未输出工具链时, 尝试正则提取食材指令
+        if not tool_chain:
+            food_chain = _try_food_regex(text)
+            if food_chain:
+                tool_chain = food_chain
 
         # 执行工具
         actions = []

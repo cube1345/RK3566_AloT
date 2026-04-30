@@ -34,10 +34,10 @@ class ToolRegistry:
             return fn
         return decorator
 
-    def execute(self, name: str, **kwargs) -> Any:
-        if name not in self._tools:
-            raise KeyError(f"工具 '{name}' 未注册")
-        return self._tools[name].fn(**kwargs)
+    def execute(self, tool_name: str, **kwargs) -> Any:
+        if tool_name not in self._tools:
+            raise KeyError(f"工具 '{tool_name}' 未注册")
+        return self._tools[tool_name].fn(**kwargs)
 
     def execute_plan(self, plan: list[dict]) -> list[dict]:
         """并行执行工具链 (所有工具并行, 后续可加依赖编排)"""
