@@ -1,5 +1,5 @@
 flask>=3.0
-chart.js>=3.0  # placeholder, 实际前端加载 CDN
-pyserial>=3.5
-smbus2>=0.4
+pyserial>=3.5       # MH-Z19B UART
+smbus2>=0.4         # SHT30 / BH1750 I2C
+gpiod>=2.0          # HC-SR501 / 继电器 GPIO (libgpiod)
 pytest>=8.0

@@ -5,7 +5,10 @@ import threading
 import time
 from pathlib import Path
 
-from config import SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WEB_PORT
+from config import (
+    SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WEB_PORT,
+    I2C_BUS, UART_DEV, SENSOR_CO2, SENSOR_TEMP, GPIO,
+)
 from core.fastpath import FastPathEngine, setup_rules
 from core.tool_registry import registry
 from core.midpath import MidPathHandler
@@ -228,15 +231,32 @@ class AgentOrchestrator:
             self.sensors.register(MockMotion())
             logger.info("使用 MOCK 传感器")
         else:
-            from sensors.co2 import CO2Sensor
-            from sensors.temp_humid import TempHumidSensor
             from sensors.light import LightSensor
             from sensors.motion import MotionSensor
-            self.sensors.register(CO2Sensor())
-            self.sensors.register(TempHumidSensor())
-            self.sensors.register(LightSensor())
+
+            # CO₂ 传感器: MH-Z19B (UART) / SGP30 (I2C)
+            if SENSOR_CO2 == "sgp30":
+                from sensors.sgp30 import SGP30Sensor
+                self.sensors.register(SGP30Sensor(bus=I2C_BUS))
+                logger.info("CO₂ 传感器: SGP30 (I2C bus %d)", I2C_BUS)
+            else:
+                from sensors.co2 import CO2Sensor
+                self.sensors.register(CO2Sensor(device=UART_DEV))
+                logger.info("CO₂ 传感器: MH-Z19B (UART %s)", UART_DEV)
+
+            # 温湿度传感器: SHT30 (I2C) / DHT11 (GPIO)
+            if SENSOR_TEMP == "dht11":
+                from sensors.dht11 import DHT11Sensor
+                self.sensors.register(DHT11Sensor(pin=GPIO["dht11"]))
+                logger.info("温湿度传感器: DHT11 (GPIO pin %d)", GPIO["dht11"])
+            else:
+                from sensors.temp_humid import TempHumidSensor
+                self.sensors.register(TempHumidSensor(bus=I2C_BUS))
+                logger.info("温湿度传感器: SHT30 (I2C bus %d)", I2C_BUS)
+
+            self.sensors.register(LightSensor(bus=I2C_BUS))
             self.sensors.register(MotionSensor())
-            logger.info("使用真实传感器")
+            logger.info("光照: BH1750, 人体: HC-SR501")
 
     def _register_devices(self):
         self.devices.register(FanDevice())

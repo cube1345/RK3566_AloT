@@ -1018,3 +1018,72 @@ class TestExecutionRobustness:
         assert "first" in order
         assert "middle" in order
         assert "last" in order
+
+
+class TestSensorDrivers:
+    """传感器驱动加载验证 (不依赖真实硬件)"""
+
+    def test_co2_sensor_import_and_defaults(self):
+        from sensors.co2 import CO2Sensor, CO2Sensor as CS
+        s = CO2Sensor()
+        assert s.name == "co2"
+        assert s._device in ("/dev/ttyAMA0", "/dev/ttyS2")  # pi5 / rk3566
+        # 无硬件 -> 调用 read 应抛出 (非主流程崩溃)
+        with pytest.raises((IOError, OSError, RuntimeError)):
+            s.read()
+
+    def test_temp_humid_sensor_import_and_defaults(self):
+        from sensors.temp_humid import TempHumidSensor
+        s = TempHumidSensor()
+        assert s.name == "temperature"
+        assert s._bus_num == 1
+        assert s._addr == 0x44
+        # I2C 不可用
+        with pytest.raises((IOError, OSError, RuntimeError)):
+            s.read()
+
+    def test_light_sensor_import_and_defaults(self):
+        from sensors.light import LightSensor
+        s = LightSensor()
+        assert s.name == "light"
+        assert s._bus_num == 1
+        assert s._addr == 0x23
+        with pytest.raises((IOError, OSError, RuntimeError)):
+            s.read()
+
+    def test_motion_sensor_import_and_defaults(self):
+        from sensors.motion import MotionSensor
+        s = MotionSensor()
+        assert s.name == "motion"
+        assert s._pin in (7, 25)  # rk3566=7, pi5=25
+        # GPIO 不可用 / sysfs 不可用 -> 走缓存 fallback
+        # sysfs 首次读取会尝试 export+read, 但 /sys/class/gpio/export 不可写
+        # 此时回退 _prev_value=0
+        reading = s.read()
+        assert reading.value in (0.0, 1.0)
+        assert reading.unit == "bool"
+
+    def test_co2_checksum(self):
+        from sensors.co2 import _checksum
+        # MH-Z19B CO₂ 回包: FF 86 01 F4 00 00 00 00  checksum
+        resp = b"\xff\x86\x01\xf4\x00\x00\x00\x00"
+        cs = _checksum(resp)
+        # 已知: 0xFF-(0x86+0x01+0xF4+0+0+0+0)&0xFF = 0xFF-0x7B = 0x84; +1 = 0x85
+        assert cs == 0x85
+
+    def test_temp_humid_crc8(self):
+        from sensors.temp_humid import _crc8
+        # Sensirion CRC-8: poly 0x31, init 0xFF
+        assert _crc8(b"\xBE\xEF") == 0x92  # Sensirion datasheet 示例
+
+    def test_temp_humid_conversions(self):
+        from sensors.temp_humid import _raw_to_temp, _raw_to_humidity
+        # 0x44C0 ≈ 17600 → T = -45 + 175 * 17600/65535 ≈ 1.9°C
+        assert abs(_raw_to_temp(0x44C0) - 1.9) < 0.2
+        # 0xAD8D ≈ 44429 → RH = 100 * 44429/65535 ≈ 67.8%
+        assert abs(_raw_to_humidity(0xAD8D) - 67.8) < 0.2
+
+    def test_bh1750_formula(self):
+        # BH1750: raw=1456 → lux=1456/1.2=1213.3
+        raw = 1456
+        assert raw / 1.2 == pytest.approx(1213.3, rel=0.01)
