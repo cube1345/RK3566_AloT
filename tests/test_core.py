@@ -386,13 +386,35 @@ class TestFoodRegexEdge:
     """食材正则兜底: 边界/异常情况"""
 
     def test_bought_with_weight(self):
+        """买了3斤苹果明天到期 → 数量在前, 名称在后"""
         from core.command_handler import _try_food_regex
         result = _try_food_regex("买了3斤苹果明天到期")
         assert result is not None
         p = result[0]["params"]
-        assert p["name"] == "苹果" or "苹果" in p["name"]
-        # 数量可能被正则捕获
-        assert "quantity" in p
+        assert p["name"] == "苹果"
+        assert p["quantity"] == 3.0
+        assert p["unit"] == "斤"
+
+    def test_bought_quantity_before_name_with_date(self):
+        """买了3斤苹果5月20到期 → 数量3, 斤, 名称苹果, 日期5月20"""
+        from core.command_handler import _try_food_regex
+        result = _try_food_regex("买了3斤苹果5月20到期")
+        assert result is not None
+        p = result[0]["params"]
+        assert p["name"] == "苹果"
+        assert p["quantity"] == 3.0
+        assert p["unit"] == "斤"
+        assert "2026-05-20" in p["expiry_date"]
+
+    def test_bought_quantity_before_name_weird_units(self):
+        """买了5盒牛奶明天过期"""
+        from core.command_handler import _try_food_regex
+        result = _try_food_regex("买了5盒牛奶明天过期")
+        assert result is not None
+        p = result[0]["params"]
+        assert "牛奶" in p["name"]
+        assert p["quantity"] == 5.0
+        assert p["unit"] == "盒"
 
     def test_bought_with_package(self):
         from core.command_handler import _try_food_regex
@@ -525,6 +547,39 @@ class TestParseToolChainStress:
         raw = f'[{{"tool": "tts", "params": {{"text": "{long}"}}}}]'
         result = _parse_tool_chain(raw)
         assert len(result) == 1
+
+    def test_parse_single_tool_object(self):
+        """单工具对象 (不在数组里) {"tool":"xxx","params":{...}}"""
+        from core.command_handler import _parse_tool_chain
+        raw = '{"tool": "ac_control", "params": {"mode": "cool", "temp": 26}}'
+        result = _parse_tool_chain(raw)
+        assert len(result) == 1
+        assert result[0]["tool"] == "ac_control"
+        assert result[0]["params"]["temp"] == 26
+
+    def test_parse_markdown_inline_code(self):
+        """行内代码块 `[tool1, tool2]`"""
+        from core.command_handler import _parse_tool_chain
+        raw = '使用 `["read_temperature", "read_humidity"]` 查询环境'
+        result = _parse_tool_chain(raw)
+        assert len(result) == 2
+        assert result[0]["tool"] == "read_temperature"
+
+    def test_parse_greedy_extraction(self):
+        """文本包裹 JSON, 找第一个 [ 到最后一个 ]"""
+        from core.command_handler import _parse_tool_chain
+        raw = '好的我来处理。[{"tool":"ac_control","params":{"mode":"cool"}}] 已执行完毕。'
+        result = _parse_tool_chain(raw)
+        assert len(result) == 1
+        assert result[0]["tool"] == "ac_control"
+
+    def test_parse_single_tool_extra_text(self):
+        """额外文本包裹单工具对象"""
+        from core.command_handler import _parse_tool_chain
+        raw = '我建议你使用 {"tool": "tts", "params": {"text": "hello"}} 来播报'
+        result = _parse_tool_chain(raw)
+        assert len(result) == 1
+        assert result[0]["tool"] == "tts"
 
 
 class TestFastPathStress:

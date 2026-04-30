@@ -167,33 +167,49 @@ class CommandHandler:
 
 
 def _try_food_regex(text: str) -> list[dict] | None:
-    """正则提取食材指令: 买了<name>[<数量>][<单位>][<日期>]到期"""
+    """正则提取食材指令: 支持带数量和不带数量两种模式"""
     import datetime
 
     t = text.strip()
-    # 模式1: "买了鸡蛋明天到期" / "买了牛奶5月20到期"
-    m = re.match(r'买(?:了)?(.+?)(?:(\d+)\s*(?:个|斤|袋|盒|瓶|包|箱|kg|g))?\s*(?:明天|(\d{1,2})月(\d{1,2})日?)?\s*(?:到期|过期)', t)
+    today = datetime.date.today()
+
+    # 模式1: 数量在名称前 "买了3斤苹果明天到期" "买了5个鸡蛋过期"
+    m = re.match(
+        r'买(?:了)?(\d+)\s*(个|斤|袋|盒|瓶|包|箱)\s*(.+?)\s*'
+        r'(?:明天|(\d{1,2})月(\d{1,2})日?)?\s*(?:到期|过期)',
+        t,
+    )
     if m:
-        name = m.group(1).strip()
-        quantity = float(m.group(2)) if m.group(2) else 1
-        unit = "个"
-        if m.group(2):
-            unit_match = re.search(r'(\d+)\s*(个|斤|袋|盒|瓶|包|箱|kg|g)', t)
-            if unit_match:
-                unit = unit_match.group(2)
-        # 日期
-        today = datetime.date.today()
-        if '明天' in t:
+        quantity = float(m.group(1))
+        unit = m.group(2)
+        name = m.group(3).strip()
+        if "明天" in t:
             expiry = (today + datetime.timedelta(days=1)).isoformat()
-        elif m.group(3) and m.group(4):
-            month, day = int(m.group(3)), int(m.group(4))
-            expiry = datetime.date(2026, month, day).isoformat()
+        elif m.group(4) and m.group(5):
+            expiry = datetime.date(2026, int(m.group(4)), int(m.group(5))).isoformat()
         else:
-            # 默认7天后过期
             expiry = (today + datetime.timedelta(days=7)).isoformat()
         return [{"tool": "add_food", "params": {"name": name, "expiry_date": expiry, "quantity": quantity, "unit": unit}}]
 
-    # 模式2: "冰箱里有什么" / "什么快过期了"
+    # 模式2: 无数量 或 数量在名称后 "买了鸡蛋明天到期" / "买了鸡蛋10个明天到期"
+    m = re.match(
+        r'买(?:了)?(.+?)(?:\s*(\d+)\s*(个|斤|袋|盒|瓶|包|箱))?\s*'
+        r'(?:明天|(\d{1,2})月(\d{1,2})日?)?\s*(?:到期|过期)',
+        t,
+    )
+    if m:
+        name = m.group(1).strip()
+        quantity = float(m.group(2)) if m.group(2) else 1
+        unit = m.group(3) if m.group(3) else "个"
+        if "明天" in t:
+            expiry = (today + datetime.timedelta(days=1)).isoformat()
+        elif m.group(4) and m.group(5):
+            expiry = datetime.date(2026, int(m.group(4)), int(m.group(5))).isoformat()
+        else:
+            expiry = (today + datetime.timedelta(days=7)).isoformat()
+        return [{"tool": "add_food", "params": {"name": name, "expiry_date": expiry, "quantity": quantity, "unit": unit}}]
+
+    # 模式3: 库存查询
     if any(kw in t for kw in ("冰箱里有什么", "有什么快过期", "什么快过期", "快过期", "快到期")):
         if "快过期" in t or "快到期" in t or "过期" in t:
             return [{"tool": "list_foods", "params": {"expiring_days": 3}}]
@@ -203,18 +219,22 @@ def _try_food_regex(text: str) -> list[dict] | None:
 
 
 def _parse_tool_chain(raw: str) -> list[dict]:
-    """解析 LLM 输出的工具链, 兼容 [tool1, tool2] 和完整格式"""
+    """解析 LLM 输出的工具链, 兼容 5 种格式 + 多层回退"""
     if not raw:
         return []
+
+    # 格式1: 裸 JSON
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return _normalize(parsed)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         pass
+
+    # 格式2: 代码块 ```json [...] ```
     for pattern in (
         r'```(?:json)?\s*(\[[\s\S]*?\])\s*```',
-        r'(\[[\s\S]*?\])',
+        r'```(?:json)?\s*(\[[\s\S]*\])\s*```',
     ):
         m = re.search(pattern, raw)
         if m:
@@ -222,9 +242,52 @@ def _parse_tool_chain(raw: str) -> list[dict]:
                 parsed = json.loads(m.group(1))
                 if isinstance(parsed, list):
                     return _normalize(parsed)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 pass
-    logger.warning("LLM non-JSON: %.120s", raw)
+
+    # 格式3: 行内 `[tool1, tool2]`
+    m = re.search(r'`(\[[\s\S]*?\])`', raw)
+    if m:
+        try:
+            parsed = json.loads(m.group(1))
+            if isinstance(parsed, list):
+                return _normalize(parsed)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 格式4: 贪婪提取, 找第一个 [ 到最后一个 ]
+    start = raw.find('[')
+    end = raw.rfind(']')
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(raw[start:end + 1])
+            if isinstance(parsed, list):
+                return _normalize(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    # 格式5: 单工具对象 {"tool": "...", ...} 不在数组里 (含嵌套)
+    idx = raw.find('"tool"')
+    if idx != -1:
+        # 往前找 {, 往后数 } 找到匹配的闭合
+        start = raw.rfind('{', 0, idx)
+        if start != -1:
+            depth = 0
+            for end in range(start, len(raw)):
+                if raw[end] == '{':
+                    depth += 1
+                elif raw[end] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            parsed = json.loads(raw[start:end + 1])
+                            if isinstance(parsed, dict) and "tool" in parsed:
+                                return _normalize([parsed])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        break
+
+    logger.warning("LLM non-JSON: %.160s", raw)
     return []
 
 
