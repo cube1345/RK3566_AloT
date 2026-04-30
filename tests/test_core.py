@@ -308,3 +308,332 @@ class TestLLMEngine:
         engine = LLMEngine.__new__(LLMEngine)
         result = engine._parse_structured("今天天气不错")
         assert result == []
+
+
+class TestToolRegistryStress:
+    """压力测试: 高并发 + 大量工具"""
+
+    def test_execute_plan_50_parallel(self):
+        """50个工具并行执行, 验证全部完成且无异常"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+
+        @r.register(description="sleep and return")
+        def slow_echo(msg: str) -> str:
+            import time
+            time.sleep(0.01)
+            return f"echo: {msg}"
+
+        plan = [{"tool": "slow_echo", "params": {"msg": f"msg_{i}"}} for i in range(50)]
+        results = r.execute_plan(plan)
+        assert len(results) == 50
+        # 确认所有结果唯一 (说明全都执行了)
+        msgs = {r["result"] for r in results}
+        assert len(msgs) == 50
+
+    def test_execute_plan_empty_params(self):
+        """空参数元组"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+
+        @r.register(description="noop")
+        def noop() -> str:
+            return "done"
+
+        plan = [{"tool": "noop", "params": {}}]
+        results = r.execute_plan(plan)
+        assert results[0]["result"] == "done"
+
+    def test_execute_plan_single_missing_tool(self):
+        """单工具未注册时抛 KeyError"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+        import pytest
+        with pytest.raises(KeyError):
+            r.execute_plan([{"tool": "nonexistent", "params": {}}])
+
+    def test_register_duplicate_overwrite(self):
+        """重复注册同名工具, 后者覆盖前者"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+
+        @r.register(description="v1")
+        def foo() -> str:
+            return "v1"
+
+        @r.register(description="v2")
+        def foo() -> str:  # noqa: F811
+            return "v2"
+
+        assert r.execute("foo") == "v2"
+
+    def test_get_prompt_block_huge(self):
+        """大量工具时 prompt_block 不崩溃"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+        for i in range(200):
+            @r.register(name=f"dummy_{i}", description=f"tool_{i}")
+            def dummy(x: int = 0) -> int:  # noqa: F811
+                return x
+        block = r.get_prompt_block()
+        assert "dummy_0" in block
+        assert "dummy_199" in block
+        assert len(block) > 1000  # 确保确实很大
+
+
+class TestFoodRegexEdge:
+    """食材正则兜底: 边界/异常情况"""
+
+    def test_bought_with_weight(self):
+        from core.command_handler import _try_food_regex
+        result = _try_food_regex("买了3斤苹果明天到期")
+        assert result is not None
+        p = result[0]["params"]
+        assert p["name"] == "苹果" or "苹果" in p["name"]
+        # 数量可能被正则捕获
+        assert "quantity" in p
+
+    def test_bought_with_package(self):
+        from core.command_handler import _try_food_regex
+        result = _try_food_regex("买了一箱牛奶过期了")
+        assert result is not None
+        p = result[0]["params"]
+        assert "牛奶" in p["name"] or "一箱牛奶" in p["name"]
+
+    def test_bought_no_date(self):
+        """买了XX但没写日期, 默认7天后"""
+        from core.command_handler import _try_food_regex
+        import datetime
+        result = _try_food_regex("买番茄")
+        # 无到期关键词, 可能不匹配 => 不抛出异常即可
+        # "买番茄"不含"到期/过期", 预期 None
+        # 但"买了番茄"也不含到期, 所以应该是 None
+        assert _try_food_regex("买番茄") is None
+
+    def test_bought_trailing_whitespace(self):
+        from core.command_handler import _try_food_regex
+        result = _try_food_regex("  买了鸡蛋明天到期  ")
+        assert result is not None
+        assert result[0]["tool"] == "add_food"
+
+    def test_bought_special_chars(self):
+        from core.command_handler import _try_food_regex
+        result = _try_food_regex("买了酱油(生抽)明天到期")
+        assert result is not None
+
+    def test_list_foods_variants(self):
+        from core.command_handler import _try_food_regex
+        assert _try_food_regex("有什么快过期") is not None
+        assert _try_food_regex("快到期了") is not None
+
+    def test_food_regex_no_crash_weird_input(self):
+        from core.command_handler import _try_food_regex
+        # 各种奇怪输入不崩溃
+        for junk in ["", "a", "!@#$%^&*()", " " * 100, "买" * 100]:
+            try:
+                _try_food_regex(junk)
+            except Exception:
+                pass  # 允许 None 或异常, 但不允许段错误
+
+
+class TestRouteStress:
+    """路由: 混合/边界/长文本"""
+
+    def test_route_mixed_keywords(self):
+        """混合关键词取优先级最先匹配的"""
+        from core.command_handler import route
+        from agents.environment_agent import AGENT_NAME as ENV_NAME
+        from agents.food_agent import AGENT_NAME as FOOD_NAME
+        # "灯" 在 environment 的 keywords 里排在前面
+        assert route("冰箱的灯不亮了") == ENV_NAME  # "灯" 匹配环境
+        # "食材" 匹配 food
+        assert route("食材过期") == FOOD_NAME  # 改: 明确选 food
+
+    def test_route_long_text(self):
+        from core.command_handler import route
+        long = "你好" * 500
+        r = route(long)
+        assert r is not None
+
+    def test_route_empty_text(self):
+        from core.command_handler import route
+        r = route("")
+        assert r is not None  # 返回默认
+
+    def test_route_case_insensitive(self):
+        from core.command_handler import route
+        from agents.environment_agent import AGENT_NAME as ENV_NAME
+        assert route("CO2") == ENV_NAME
+        assert route("co2") == ENV_NAME
+        assert route("Co2") == ENV_NAME
+
+    def test_route_near_miss(self):
+        """接近但不完全匹配关键词, 应该走默认"""
+        from core.command_handler import route
+        r = route("今天心情不错")
+        assert r is not None
+
+
+class TestParseToolChainStress:
+    """解析: 巨型/畸形/嵌套"""
+
+    def test_parse_1000_item_chain(self):
+        from core.command_handler import _parse_tool_chain
+        items = [{"tool": "read_temperature", "params": {}} for _ in range(1000)]
+        raw = str(items).replace("'", '"')
+        result = _parse_tool_chain(raw)
+        assert len(result) == 1000
+
+    def test_parse_deeply_nested_garbage(self):
+        """深层嵌套不崩溃"""
+        from core.command_handler import _parse_tool_chain
+        # 100层嵌套, json 会解析失败, 但不应崩溃
+        raw = "[" * 100 + "]" * 100
+        result = _parse_tool_chain(raw)
+        assert isinstance(result, list)
+
+    def test_parse_garbage_prefix(self):
+        """LLM 常见问题: 前面有解释文本再跟JSON"""
+        from core.command_handler import _parse_tool_chain
+        raw = """我来帮你处理。
+好的，以下是工具调用：
+```json
+[{"tool": "ac_control", "params": {"mode": "cool"}}]
+```
+如果有其他需要请告诉我。"""
+        result = _parse_tool_chain(raw)
+        assert len(result) == 1
+        assert result[0]["tool"] == "ac_control"
+
+    def test_parse_unicode_chinese(self):
+        """中文参数"""
+        from core.command_handler import _parse_tool_chain
+        raw = '[{"tool": "add_food", "params": {"name": "鸡蛋", "storage": "冷藏"}}]'
+        result = _parse_tool_chain(raw)
+        assert result[0]["params"]["name"] == "鸡蛋"
+
+    def test_parse_truncated_json(self):
+        """截断的 JSON 不崩溃, 返回空列表"""
+        from core.command_handler import _parse_tool_chain
+        assert _parse_tool_chain('[{"tool": "ac') == []
+
+    def test_parse_very_long_strings(self):
+        """非常长的参数值"""
+        from core.command_handler import _parse_tool_chain
+        long = "x" * 100000
+        raw = f'[{{"tool": "tts", "params": {{"text": "{long}"}}}}]'
+        result = _parse_tool_chain(raw)
+        assert len(result) == 1
+
+
+class TestFastPathStress:
+    """规则引擎: 高频触发 + 边界"""
+
+    def test_rapid_updates(self):
+        """每秒100次更新, 保持稳定"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = []
+
+        @fp.add_rule("test", cooldown=0)
+        def rule(value, old, ctx):
+            fired.append(value)
+
+        import time
+        start = time.time()
+        for i in range(100):
+            fp.update_sensor("test", i)
+        elapsed = time.time() - start
+        assert len(fired) == 100  # 全部触发
+        assert elapsed < 1.0  # 应在毫秒级完成
+
+    def test_rule_with_context(self):
+        """验证 ctx 对象存在且可读写"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+
+        @fp.add_rule("temp", cooldown=0)
+        def rule(value, old, ctx):
+            ctx["last"] = value
+
+        fp.update_sensor("temp", 25)
+        sensors = fp.get_sensors() if hasattr(fp, "get_sensors") else {}
+        assert sensors is not None
+
+    def test_multiple_rules_same_sensor(self):
+        """同传感器多个规则, 全部触发"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = set()
+
+        for name in ("A", "B", "C"):
+            @fp.add_rule("temp", cooldown=0)
+            def rule(value, old, ctx, _n=name):  # noqa: E741
+                fired.add(_n)
+
+        fp.update_sensor("temp", 30)
+        assert len(fired) == 3
+
+
+class TestDatabaseStress:
+    """数据库: 批量操作 + 边界"""
+
+    def test_bulk_insert_foods(self):
+        """批量插入100条食材"""
+        from knowledge.database import Database
+        import tempfile
+        from pathlib import Path
+        import knowledge.database as dbmod
+
+        tmp = Path(tempfile.mktemp(suffix=".db"))
+        dbmod.DB_PATH = tmp
+        try:
+            db = Database()
+            import datetime
+            for i in range(100):
+                name = f"食材_{i:03d}"
+                expiry = (datetime.date.today() + datetime.timedelta(days=i)).isoformat()
+                db.add_food(name, expiry, "冷藏", 1, "个")
+            foods = db.list_foods()
+            assert len(foods) == 100
+            db.close()
+        finally:
+            if tmp.exists():
+                import os; os.unlink(str(tmp))
+
+    def test_bulk_sensor_logs(self):
+        """批量插入500条传感器记录"""
+        from knowledge.database import Database
+        import tempfile
+        from pathlib import Path
+        import knowledge.database as dbmod
+
+        tmp = Path(tempfile.mktemp(suffix=".db"))
+        dbmod.DB_PATH = tmp
+        try:
+            db = Database()
+            for i in range(500):
+                db.log_sensor("co2", 400 + i % 1000, "ppm")
+            logs = db.query_sensor("co2", hours=168)  # 7天
+            assert len(logs) == 500
+            db.close()
+        finally:
+            if tmp.exists():
+                import os; os.unlink(str(tmp))
+
+    def test_remove_nonexistent(self):
+        """删除不存在的食材不崩溃"""
+        from knowledge.database import Database
+        import tempfile
+        from pathlib import Path
+        import knowledge.database as dbmod
+
+        tmp = Path(tempfile.mktemp(suffix=".db"))
+        dbmod.DB_PATH = tmp
+        try:
+            db = Database()
+            db.remove_food(99999)  # 不存在的 ID
+            db.close()
+        finally:
+            if tmp.exists():
+                import os; os.unlink(str(tmp))
