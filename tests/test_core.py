@@ -345,12 +345,13 @@ class TestToolRegistryStress:
         assert results[0]["result"] == "done"
 
     def test_execute_plan_single_missing_tool(self):
-        """单工具未注册时抛 KeyError"""
+        """单工具未注册时返回错误, 不抛异常"""
         from core.tool_registry import ToolRegistry
         r = ToolRegistry()
-        import pytest
-        with pytest.raises(KeyError):
-            r.execute_plan([{"tool": "nonexistent", "params": {}}])
+        results = r.execute_plan([{"tool": "nonexistent", "params": {}}])
+        assert len(results) == 1
+        assert "error" in str(results[0]["result"]).lower()
+        assert "nonexistent" in str(results[0]["result"])
 
     def test_register_duplicate_overwrite(self):
         """重复注册同名工具, 后者覆盖前者"""
@@ -637,3 +638,328 @@ class TestDatabaseStress:
         finally:
             if tmp.exists():
                 import os; os.unlink(str(tmp))
+
+
+class TestConcurrencyStress:
+    """并发压力: 多线程 DB 访问 + 多线程 registry 读取"""
+
+    def test_concurrent_db_writes(self):
+        """50个线程并发写DB (使用锁), 验证全部写入"""
+        import threading, tempfile
+        from pathlib import Path
+        import knowledge.database as dbmod
+        tmp = Path(tempfile.mktemp(suffix=".db"))
+        dbmod.DB_PATH = tmp
+        lock = threading.Lock()
+        try:
+            db = dbmod.Database()
+            errors = []
+
+            def writer(i):
+                try:
+                    import datetime
+                    expiry = (datetime.date.today() + datetime.timedelta(days=i)).isoformat()
+                    with lock:
+                        db.add_food(f"conc_{i}", expiry, "冷藏", 1, "个")
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=writer, args=(i,)) for i in range(50)]
+            for t in threads: t.start()
+            for t in threads: t.join()
+            assert len(errors) == 0, f"Concurrent write errors: {errors}"
+            assert len(db.list_foods()) >= 50
+            db.close()
+        finally:
+            if tmp.exists(): import os; os.unlink(str(tmp))
+
+    def test_concurrent_registry_reads(self):
+        """20个线程并发读取registry工具列表, 不崩溃"""
+        from core.tool_registry import ToolRegistry
+        import threading
+        r = ToolRegistry()
+
+        @r.register(description="echo")
+        def echo(msg: str) -> str:
+            return f"echo: {msg}"
+
+        @r.register(description="add")
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        results = []
+
+        def reader(idx):
+            try:
+                tools = r.list_tools()
+                results.append(len(tools))
+            except Exception as e:
+                results.append(e)
+
+        threads = [threading.Thread(target=reader, args=(i,)) for i in range(20)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        # 所有读取结果一致
+        non_error = [v for v in results if isinstance(v, int)]
+        assert len(non_error) == 20
+        assert all(n == 2 for n in non_error)
+
+    def test_concurrent_execute_plan_mixed(self):
+        """多线程交叉执行同一registry的plan, 无干扰"""
+        from core.tool_registry import ToolRegistry
+        import threading
+        r = ToolRegistry()
+
+        @r.register(description="echo")
+        def echo(msg: str) -> str:
+            return f"echo: {msg}"
+
+        outcomes = {}
+
+        def runner(pid):
+            plan = [{"tool": "echo", "params": {"msg": f"p{pid}"}}]
+            results = r.execute_plan(plan)
+            outcomes[pid] = results[0]["result"]
+
+        threads = [threading.Thread(target=runner, args=(i,)) for i in range(30)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert len(outcomes) == 30
+        for pid, res in outcomes.items():
+            assert res == f"echo: p{pid}"
+
+
+class TestHugePayloadStress:
+    """巨量负载: 高循环数 + 大工具链列表"""
+
+    def test_food_regex_10000_loop(self):
+        """食材正则10000次紧循环, 验证稳定性和正确计数"""
+        from core.command_handler import _try_food_regex
+        match_count = 0
+        no_match_count = 0
+        for i in range(10000):
+            text = f"买了鸡蛋{i}个明天到期"
+            result = _try_food_regex(text)
+            if result is not None:
+                match_count += 1
+                assert result[0]["tool"] == "add_food"
+                assert result[0]["params"]["name"] == "鸡蛋"
+            else:
+                no_match_count += 1
+        # 最多容忍1次漏匹配 (极低)
+        assert no_match_count <= 1, f"Missed {no_match_count} matches out of 10000"
+        assert match_count >= 9999
+
+    def test_parse_10000_item_tool_chain(self):
+        """10000个工具链解析, 完整返回"""
+        from core.command_handler import _parse_tool_chain
+        items = [{"tool": "read_temperature", "params": {}} for _ in range(10000)]
+        raw = str(items).replace("'", '"')
+        result = _parse_tool_chain(raw)
+        assert len(result) == 10000
+        for step in result:
+            assert step["tool"] == "read_temperature"
+
+    def test_deeply_nested_json_parse(self):
+        """超深嵌套JSON解析不崩溃"""
+        from core.command_handler import _parse_tool_chain
+        import json
+        # 构造深层嵌套: {"a":{"a":...}} 共300层
+        nested = "{}"
+        for _ in range(300):
+            nested = json.dumps({"a": json.loads(nested) if nested != "{}" else {}})
+        # wrap在工具链外
+        raw = f'[{{"tool": "echo", "params": {{"data": {nested}}}}}]'
+        result = _parse_tool_chain(raw)
+        # 应该成功解析或优雅失败
+        assert isinstance(result, list)
+
+
+class TestEdgeCaseStress:
+    """边界值压力: NaN, Infinity, 负数, 零值, 特殊类型"""
+
+    def test_fastpath_nan_value(self):
+        """NaN传感器值不崩溃"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = []
+
+        @fp.add_rule("temp", cooldown=0)
+        def rule(value, old, ctx):
+            fired.append(value)
+
+        fp.update_sensor("temp", float('nan'))
+        assert isinstance(fired, list)
+
+    def test_fastpath_inf_value(self):
+        """Infinity传感器值不崩溃"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = []
+
+        @fp.add_rule("temp", cooldown=0)
+        def rule(value, old, ctx):
+            fired.append(value)
+
+        fp.update_sensor("temp", float('inf'))
+        assert isinstance(fired, list)
+
+    def test_fastpath_neg_inf_value(self):
+        """负Infinity传感器值不崩溃"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = []
+
+        @fp.add_rule("temp", cooldown=0)
+        def rule(value, old, ctx):
+            fired.append(value)
+
+        fp.update_sensor("temp", float('-inf'))
+        assert isinstance(fired, list)
+
+    def test_fastpath_negative_value(self):
+        """负数传感器值正确触发"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = []
+
+        @fp.add_rule("temp", cooldown=0)
+        def rule(value, old, ctx):
+            fired.append(value)
+
+        fp.update_sensor("temp", -273.15)
+        assert len(fired) == 1
+        assert fired[0] == -273.15
+
+    def test_fastpath_zero_value(self):
+        """零值传感器值正确触发"""
+        from core.fastpath import FastPathEngine
+        fp = FastPathEngine()
+        fired = []
+
+        @fp.add_rule("temp", cooldown=0)
+        def rule(value, old, ctx):
+            fired.append(value)
+
+        fp.update_sensor("temp", 0)
+        assert len(fired) == 1
+        assert fired[0] == 0
+
+    def test_route_none_input(self):
+        """route(None) 不崩溃"""
+        from core.command_handler import route
+        try:
+            r = route(None)  # type: ignore
+            assert r is not None
+        except (TypeError, AttributeError):
+            pass  # 允许合理类型错误, 但不允许段错误
+
+    def test_parse_tool_chain_binary(self):
+        """二进制/非UTF8内容不崩溃"""
+        from core.command_handler import _parse_tool_chain
+        try:
+            result = _parse_tool_chain(b'\x00\xff\xfe\xfd')  # type: ignore
+            assert isinstance(result, list)
+        except TypeError:
+            pass  # json.loads(bytes) 可能抛 TypeError, 接受
+
+
+class TestExecutionRobustness:
+    """执行鲁棒性: 异常工具 + 部分失败 + 混合成功失败"""
+
+    def test_execute_plan_partial_failure(self):
+        """部分工具失败时, 所有工具都执行完毕"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+
+        @r.register(description="ok")
+        def ok(): return "good"
+
+        @r.register(description="fail")
+        def fail(): raise ValueError("boom")
+
+        plan = [
+            {"tool": "ok", "params": {}},
+            {"tool": "fail", "params": {}},
+            {"tool": "ok", "params": {}},
+        ]
+        results = r.execute_plan(plan)
+        assert len(results) == 3
+        tools_ran = {r["tool"] for r in results}
+        assert tools_ran == {"ok", "fail"}
+
+    def test_execute_plan_all_fail(self):
+        """所有工具都失败"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+
+        @r.register(description="always fail")
+        def boom(): raise RuntimeError("always fail")
+
+        plan = [{"tool": "boom", "params": {}} for _ in range(5)]
+        results = r.execute_plan(plan)
+        assert len(results) == 5
+        for res in results:
+            assert res["tool"] == "boom"
+
+    def test_execute_plan_mixed_types(self):
+        """混合成功/失败/异常工具"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+
+        @r.register(description="ok")
+        def ok(x: int = 0) -> int:
+            return x * 2
+
+        @r.register(description="fail")
+        def fail(): raise ValueError("fail")
+
+        @r.register(description="other ok")
+        def other(msg: str = "") -> str:
+            return f"ok:{msg}"
+
+        plan = [
+            {"tool": "ok", "params": {"x": 5}},
+            {"tool": "fail", "params": {}},
+            {"tool": "other", "params": {"msg": "test"}},
+            {"tool": "ok", "params": {"x": 0}},
+        ]
+        results = r.execute_plan(plan)
+        assert len(results) == 4
+        by_name = {r["tool"]: r["result"] for r in results}
+        assert by_name["ok"] in (10, 0)  # ok 被调了两次 (x=5 和 x=0), 保留最后一个
+        assert "error" in str(by_name["fail"]).lower() or "fail" in str(by_name["fail"])
+        assert by_name["other"] == "ok:test"
+
+    def test_execute_plan_exception_in_middle(self):
+        """异常发生在中间, 前后工具不受影响"""
+        from core.tool_registry import ToolRegistry
+        r = ToolRegistry()
+        order = []
+
+        @r.register(description="first")
+        def first():
+            order.append("first")
+            return "first_done"
+
+        @r.register(description="middle fail")
+        def middle():
+            order.append("middle")
+            raise ValueError("middle failed")
+
+        @r.register(description="last")
+        def last():
+            order.append("last")
+            return "last_done"
+
+        plan = [
+            {"tool": "first", "params": {}},
+            {"tool": "middle", "params": {}},
+            {"tool": "last", "params": {}},
+        ]
+        results = r.execute_plan(plan)
+        assert len(results) == 3
+        # 确认所有工具都排到了执行顺序
+        assert "first" in order
+        assert "middle" in order
+        assert "last" in order

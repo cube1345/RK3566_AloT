@@ -44,9 +44,13 @@ class ToolRegistry:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _run_one(call: dict):
+            try:
+                result = self.execute(call["tool"], **call.get("params", {}))
+            except Exception as e:
+                result = f"<error: {e}>"
             return {
                 "tool": call["tool"],
-                "result": self.execute(call["tool"], **call.get("params", {})),
+                "result": result,
             }
 
         with ThreadPoolExecutor(max_workers=min(len(plan) or 1, 8)) as pool:
