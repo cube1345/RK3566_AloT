@@ -12,6 +12,7 @@
 - **测试**: 151 passed / 157 total, 5个预存smbus2/serial失败(Windows), 1个async跳过 (core 117 + stress 34)
 - **LLM**: Qwen2.5-1.5B-Instruct Q4_K_M GGUF (941MB, 推理 ~10 tok/s)
 - **当前分支**: master
+- **Pi 5 部署**: 进行中 (2026-05-01, Debian Trixie 13/testing, 清华镜像源)
 
 ## 架构核心 (v5.1)
 
@@ -74,8 +75,19 @@
 - [x] 项目文档 (方案文档+硬件清单+部署教程+移植文档)
 
 ### 待完成
-- [ ] 传感器接线 + Pi 5 部署 + 端到端演示 (教程已就绪: docs/Pi5部署教程.md)
-- [ ] LLM 模型下载到 Pi 5
+- [ ] 传感器接线 (硬件未到)
+- [ ] Pi 5 部署 (进行中, 见下方进度)
+  - [x] 烧录系统 (Debian Trixie, SSH 就绪)
+  - [ ] 切换清华镜像源 (apt update 失败, sources.list 中残留 EOF)
+  - [ ] 安装基础包 (git, python3-pip, python3-venv, i2c-tools, gpiod)
+  - [ ] 启用 I2C (raspi-config)
+  - [ ] 上传代码 (未决定用 git clone 还是 SCP)
+  - [ ] 创建 venv + 安装 Python 依赖
+  - [ ] 编译 llama.cpp (make -j4)
+  - [ ] 下载 LLM 模型 (941MB GGUF)
+  - [ ] 配置 .env (AGENT_MOCK=0, sgp30+dht11, pi5)
+  - [ ] 跑测试 (先 -k 'not TestSensorDrivers')
+  - [ ] 启动 main.py + Dashboard 验证
 - [ ] PDF方案文档排版 (方案已就绪: docs/方案文档.md)
 - [ ] 演示视频录制 (≤3min)
 
