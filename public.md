@@ -1,6 +1,6 @@
 # Agent ZX 公共知识库
 
-> 最后更新: 2026-05-01 | 版本: v5.1 (场景+反问+知识驱动)
+> 最后更新: 2026-05-01 | 版本: v5.1 | 传感器: SGP30+DHT11+BH1750+HC-SR501
 
 ## 项目总览
 
@@ -52,6 +52,7 @@
 - `llm/`: engine.py, llamacpp_backend.py, rknn_backend.py, context.py
 - `knowledge/`: database.py (8表: sensor_log, event_log, foods, home_tips, user_prefs, ai_decisions, routines + 3知识查询方法)
 - `web/`: app.py (14 API), templates/dashboard.html (提问UI)
+- `docs/`: 方案文档.md, 硬件清单.md, Pi5部署教程.md
 - `tests/`: test_core.py (123 tests)
 
 ## 当前状态 (v5.1)
@@ -72,9 +73,9 @@
 - [x] 117 测试全通 (19 v5.1新增)
 
 ### 待完成
-- [ ] 真实传感器接线 + 端到端演示验证 (需Pi 5)
+- [ ] 传感器接线 + Pi 5 部署 + 端到端演示 (教程已就绪: docs/Pi5部署教程.md)
 - [ ] LLM 模型下载到 Pi 5
-- [ ] PDF方案文档排版
+- [ ] PDF方案文档排版 (方案已就绪: docs/方案文档.md)
 - [ ] 演示视频录制 (≤3min)
 
 ## 合作方式
