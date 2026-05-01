@@ -47,7 +47,7 @@
 ### 模块结构
 - `core/`: agent.py (主循环), ai_brain.py (AI决策+知识+反问), scene_engine.py (6场景识别, NEW), command_handler.py (ReAct循环+场景入口), fastpath.py (安全网), midpath.py (AI自然语言), tool_registry.py (工具注册+并行执行)
 - `agents/`: environment_agent.py, food_agent.py, life_agent.py (分层System Prompt + TOOLS)
-- `sensors/`: co2.py, temp_humid.py, light.py, motion.py, mock.py
+- `sensors/`: co2.py (MH-Z19B), sgp30.py (SGP30), temp_humid.py (SHT30), dht11.py (DHT11), light.py, motion.py, mock.py
 - `devices/`: fan.py, light.py, ac.py, purifier.py, manager.py, base.py
 - `llm/`: engine.py, llamacpp_backend.py, rknn_backend.py, context.py
 - `knowledge/`: database.py (8表: sensor_log, event_log, foods, home_tips, user_prefs, ai_decisions, routines + 3知识查询方法)
@@ -60,7 +60,7 @@
 - [x] 项目骨架 + 配置系统
 - [x] ToolRegistry + 并行执行引擎
 - [x] FastPath 安全网 (仅紧急阈值)
-- [x] Mock 传感器 + 4 真实传感器驱动
+- [x] Mock 传感器 + 6 真实传感器驱动 (SGP30/DHT11 默认)
 - [x] 4 设备驱动 (风扇/灯/净化器/空调)
 - [x] LLM 推理 (llama.cpp CPU, temperature=0)
 - [x] v5.0: AI 决策引擎 (evaluate/detect_anomaly/generate_insight/learn_preference)

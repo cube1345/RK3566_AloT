@@ -18,10 +18,10 @@ SENSOR_INTERVAL = {
 }
 
 # ===== 传感器型号选择 (MOCK_SENSORS=0 时生效) =====
-# CO₂: "mhz19b" (UART) / "sgp30" (I2C)
-SENSOR_CO2 = os.getenv("AGENT_SENSOR_CO2", "mhz19b").lower()
-# 温湿度: "sht30" (I2C) / "dht11" (GPIO)
-SENSOR_TEMP = os.getenv("AGENT_SENSOR_TEMP", "sht30").lower()
+# CO₂: "sgp30" (I2C) / "mhz19b" (UART)
+SENSOR_CO2 = os.getenv("AGENT_SENSOR_CO2", "sgp30").lower()
+# 温湿度: "dht11" (GPIO) / "sht30" (I2C)
+SENSOR_TEMP = os.getenv("AGENT_SENSOR_TEMP", "dht11").lower()
 
 # ===== 自动控制阈值 =====
 CO2_THRESHOLDS = {
@@ -93,6 +93,7 @@ else:
 I2C_BUS = int(os.getenv("AGENT_I2C_BUS", "1"))
 I2C_ADDR = {
     "sht30": 0x44,   # SHT30 默认地址 (ADDR=L)
+    "sgp30": 0x58,   # SGP30 固定地址
     "bh1750": 0x23,  # BH1750 默认地址 (ADDR=L)
 }
 
