@@ -1,6 +1,6 @@
 # Agent ZX 公共知识库
 
-> 最后更新: 2026-05-01 | 版本: v5.1 | 传感器: SGP30+DHT11+BH1750+HC-SR501
+> 最后更新: 2026-05-01 | 版本: v5.1 | 传感器: SGP30+DHT11+BH1750+HC-SR501 | 测试: 151 passed
 
 ## 项目总览
 
@@ -9,7 +9,7 @@
 - **团队**: 1 人 (cube + Claude 副驾)
 - **硬件目标**: Raspberry Pi 5 8GB (BCM2712, 4×A76@2.4GHz)
 - **代码量**: ~3500 行 Python, 35 模块 (新增 ai_brain.py, scene_engine.py)
-- **测试**: 117 passed / 123 total, 5个预存smbus2失败(Windows), 1个async跳过
+- **测试**: 151 passed / 157 total, 5个预存smbus2/serial失败(Windows), 1个async跳过 (core 117 + stress 34)
 - **LLM**: Qwen2.5-1.5B-Instruct Q4_K_M GGUF (941MB, 推理 ~10 tok/s)
 - **当前分支**: master
 
@@ -52,8 +52,8 @@
 - `llm/`: engine.py, llamacpp_backend.py, rknn_backend.py, context.py
 - `knowledge/`: database.py (8表: sensor_log, event_log, foods, home_tips, user_prefs, ai_decisions, routines + 3知识查询方法)
 - `web/`: app.py (14 API), templates/dashboard.html (提问UI)
-- `docs/`: 方案文档.md, 硬件清单.md, Pi5部署教程.md
-- `tests/`: test_core.py (123 tests)
+- `docs/`: 方案文档.md(赛题方案), 硬件清单.md(21项硬件), Pi5部署教程.md(MobaXterm), 移植文档.md(跨平台)
+- `tests/`: test_core.py (123 tests), test_stress.py (34 tests, 8类压力)
 
 ## 当前状态 (v5.1)
 
@@ -70,7 +70,8 @@
 - [x] v5.1: AI主动反问 (question输出类型 + Dashboard 5s轮询)
 - [x] v5.1: 知识驱动决策 (同时段对比+日均趋势+传感器关联+routines规律)
 - [x] v5.1: Web Dashboard (14 API, 提问UI)
-- [x] 117 测试全通 (19 v5.1新增)
+- [x] v5.1: 全方位高压测试 (34 stress tests, 8类, 全部通过)
+- [x] 项目文档 (方案文档+硬件清单+部署教程+移植文档)
 
 ### 待完成
 - [ ] 传感器接线 + Pi 5 部署 + 端到端演示 (教程已就绪: docs/Pi5部署教程.md)
