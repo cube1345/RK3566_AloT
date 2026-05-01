@@ -134,6 +134,12 @@ WEB_PORT = 5000
 # ===== GPIO 可用 (非 mock 时) =====
 GPIO_AVAILABLE = os.getenv("AGENT_GPIO", "0") == "1"
 
+# ===== AI Decision Engine =====
+AI_EVAL_INTERVAL = 30          # AI决策评估间隔(秒)
+AI_MAX_REACT_ITER = 2          # ReAct最大迭代轮次
+AI_ANOMALY_THRESHOLD = 3.0     # z-score异常检测阈值
+AI_MIN_CONFIDENCE = 0.3        # 偏好最低置信度(低于此值不注入LLM)
+
 # ===== 继电器触发极性 =====
 # 大多数国产模块是 LOW 触发 (IN=LOW → 继电器吸合)
 # 少数模块是 HIGH 触发或可跳线切换

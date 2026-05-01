@@ -80,40 +80,24 @@ def setup_rules(fp: FastPathEngine):
 
     @fp.add_rule("temperature", cooldown=30)
     def temp_rule(value, old, ctx):
-        humidity = ctx.get_sensor("humidity", 50)
-        if value > 28 and humidity > 70:
-            ctx.run_action("ac_control", mode="cool", temp=26, fan_speed="auto")
-            ctx.run_action("set_fan", speed=1)
-            logger.info("FP: 闷热 → 空调26°C + 风扇低速")
-        elif value > 30:
-            ctx.run_action("ac_control", mode="cool", temp=24, fan_speed="high")
-            logger.info("FP: 酷热 → 空调24°C")
-        elif value < 18:
+        # 仅处理紧急情况: AI决策引擎处理日常舒适调节
+        if value > 35:
+            ctx.run_action("ac_control", mode="cool", temp=26, fan_speed="high")
+            ctx.run_action("tts", text="⚠️ 温度过高！已开启紧急降温")
+            logger.warning("FP 紧急: 酷热 %.1f → 空调全速", value)
+        elif value < 10:
             ctx.run_action("ac_control", mode="heat", temp=22)
-            logger.info("FP: 偏冷 → 空调22°C")
-        elif ctx.get_sensor("humidity", 50) > 80:
-            ctx.run_action("ac_control", mode="dry", fan_speed="low")
-            logger.info("FP: 潮湿 → 除湿模式")
+            ctx.run_action("tts", text="⚠️ 温度过低！已开启紧急升温")
+            logger.warning("FP 紧急: 严寒 %.1f → 空调制热", value)
 
     @fp.add_rule("co2", cooldown=20)
     def co2_rule(value, old, ctx):
-        if value < 800:
-            return
-        if value < 1200:
-            ctx.run_action("set_air_purifier", level=1)
-            if ctx.get_sensor("person_present", False):
-                ctx.run_action("tts", text="CO₂浓度偏高, 已开启通风")
-            logger.info("FP: CO₂ %.0f → 通风低速", value)
-        elif value < 2000:
-            ctx.run_action("set_air_purifier", level=2)
-            ctx.run_action("set_fan", speed=2)
-            ctx.run_action("notify_display", title="⚠️ CO₂偏高", body="建议开窗")
-            logger.info("FP: CO₂ %.0f → 通风高速 + 风扇", value)
-        else:
+        # 仅处理紧急告警: AI决策引擎处理日常CO₂调节
+        if value > 2000:
             ctx.run_action("set_air_purifier", level=3)
             ctx.run_action("set_fan", speed=3)
             ctx.run_action("tts", text="⚠️ CO₂浓度过高！请立即开窗通风！")
-            logger.warning("FP: CO₂ %.0f → 紧急告警", value)
+            logger.warning("FP 紧急: CO₂ %.0f → 全速通风", value)
 
     @fp.add_rule("light", cooldown=5)
     def light_rule(value, old, ctx):

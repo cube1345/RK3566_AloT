@@ -7,6 +7,7 @@ from agents.environment_agent import SYSTEM_PROMPT as ENV_PROMPT, AGENT_NAME as 
 from agents.food_agent import SYSTEM_PROMPT as FOOD_PROMPT, AGENT_NAME as FOOD_NAME
 from agents.life_agent import SYSTEM_PROMPT as LIFE_PROMPT, AGENT_NAME as LIFE_NAME
 from core.tool_registry import registry
+from config import AI_MAX_REACT_ITER
 
 logger = logging.getLogger("command")
 
@@ -48,6 +49,11 @@ class CommandHandler:
         self._llm = llm
 
     def handle(self, text: str, history: list[dict] | None = None) -> dict:
+        # 复杂指令走ReAct多步推理
+        complex_kw = ("为什么", "怎么样", "检查", "分析", "如何", "怎么回事", "怎么办")
+        if len(text) > 15 or any(kw in text for kw in complex_kw):
+            return self._react_loop(text, max_iter=AI_MAX_REACT_ITER)
+
         agent_name = route(text)
         logger.info("路由: '%s' -> %s", text[:40], agent_name)
 
@@ -124,6 +130,76 @@ class CommandHandler:
             "actions": actions,
             "agent": agent_name,
             "llm_used": llm_used,
+        }
+
+    def _react_loop(self, text: str, max_iter: int = 2) -> dict:
+        """ReAct循环: LLM行动→观察结果→再决策, 最多max_iter轮"""
+        agent_name = route(text)
+        agent_role = _AGENT_MAP[agent_name]
+        tool_block = registry.get_prompt_block()
+        context = self._build_context()
+
+        all_actions = []
+        observation = ""
+        llm_used = False
+
+        for iteration in range(max_iter):
+            if iteration == 0:
+                user_prompt = f"当前环境: {context}\n\n用户指令: {text}\n\n需要什么工具？只输出JSON数组。"
+            else:
+                user_prompt = (
+                    f"当前环境: {context}\n"
+                    f"已执行结果: {observation}\n"
+                    f"还需要更多操作吗？不需要输出[]。"
+                )
+
+            system_prompt = (
+                "你是智能家居工具调用器。\n"
+                f"角色: {agent_role}\n\n"
+                "规则: 只输出JSON数组。没有文字。不需要就[]。\n"
+                f"这是第{iteration+1}/{max_iter}步。\n\n"
+                f"### 可用工具\n{tool_block}\n\n"
+                "只输出JSON。"
+            )
+
+            if not self._llm or not self._llm.is_loaded:
+                break
+
+            try:
+                raw = self._llm.generate(user_prompt, system=system_prompt)
+                tool_chain = _parse_tool_chain(raw)
+                llm_used = True
+            except Exception as e:
+                logger.warning("ReAct迭代%d失败: %s", iteration+1, e)
+                break
+
+            if not tool_chain:
+                break
+
+            actions = registry.execute_plan(tool_chain)
+            all_actions.extend(actions)
+
+            observation = "; ".join(
+                f"{a['tool']}→{str(a.get('result',''))[:80]}"
+                for a in actions
+            )
+            logger.info("ReAct[%d/%d]: %d工具 → %s",
+                        iteration+1, max_iter, len(actions), observation[:100])
+
+        reply = self._build_reply(agent_name, all_actions, text, llm_used)
+
+        if self._db:
+            self._db.log_event("user_command", f"[{agent_name}][ReAct] {text[:100]}")
+            for a in all_actions:
+                self._db.log_event("tool_exec",
+                    f"{a.get('tool')}: {str(a.get('result',''))[:80]}")
+
+        return {
+            "reply": reply,
+            "actions": all_actions,
+            "agent": agent_name,
+            "llm_used": llm_used,
+            "iterations": iteration + 1,
         }
 
     def _build_context(self) -> str:

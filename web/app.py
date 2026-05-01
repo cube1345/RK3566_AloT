@@ -109,6 +109,24 @@ def api_command():
     if orchestrator is None:
         return jsonify({"reply": "系统未就绪", "actions": [], "agent": "", "llm_used": False})
 
+    # 偏好学习: 如果最近60s内有AI决策且用户指令涉及设备控制, 记录为偏好覆盖
+    try:
+        recent = orchestrator.ai_brain._recent_decisions
+        if recent:
+            last = recent[-1]
+            if time.time() - last.get("time", 0) < 60:
+                last_tools = [a.get("tool", "") for a in last.get("actions", [])]
+                device_kw = ("ac_control", "set_fan", "set_light", "set_air_purifier")
+                if any(t in device_kw for t in last_tools) and any(
+                    kw in text for kw in ("温度", "度", "风扇", "灯", "空调", "净化")
+                ):
+                    orchestrator.ai_brain.learn_preference(
+                        trigger=f"ai_{'_'.join(last_tools[:2])}",
+                        user_action=text[:80],
+                    )
+    except Exception:
+        pass
+
     result = orchestrator.handle_command(text)
     return jsonify(result)
 
@@ -129,6 +147,28 @@ def api_status():
         "llm_loaded": getattr(orchestrator, '_llm_available', False),
         "mock_mode": orchestrator.sensors._sensors.get("co2", None) is not None,
     })
+
+
+@app.route("/api/insights")
+def api_insights():
+    """获取最近AI洞察"""
+    events = orchestrator.db.query_events(24)
+    insights = [e for e in events if e.get("event_type") == "ai_insight"]
+    return jsonify(insights)
+
+
+@app.route("/api/preferences")
+def api_preferences():
+    """查看学习到的用户偏好"""
+    prefs = orchestrator.db.get_prefs(min_confidence=0.0)
+    return jsonify(prefs)
+
+
+@app.route("/api/preferences/<key>", methods=["DELETE"])
+def api_preference_delete(key):
+    """删除一个偏好"""
+    orchestrator.db.delete_pref(key)
+    return jsonify({"status": "ok"})
 
 
 # ===== 页面 =====

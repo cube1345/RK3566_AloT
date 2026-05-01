@@ -8,6 +8,7 @@ from pathlib import Path
 from config import (
     SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WEB_PORT,
     I2C_BUS, UART_DEV, SENSOR_CO2, SENSOR_TEMP, GPIO,
+    AI_EVAL_INTERVAL, AI_ANOMALY_THRESHOLD,
 )
 from core.fastpath import FastPathEngine, setup_rules
 from core.tool_registry import registry
@@ -21,6 +22,7 @@ from devices.light import LightDevice
 from devices.purifier import AirPurifierDevice
 from knowledge.database import Database
 from tts.speaker import TTSEngine
+from core.ai_brain import AIBrain
 
 logger = logging.getLogger("agent")
 
@@ -33,6 +35,7 @@ class AgentOrchestrator:
         self.db = Database()
         self.tts = TTSEngine()
         self.midpath = MidPathHandler()
+        self.ai_brain = AIBrain()
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._llm_available = False
@@ -60,6 +63,14 @@ class AgentOrchestrator:
         # 5. 尝试加载 LLM
         await self._init_llm()
 
+        # 5.5 接入AI大脑
+        if self._llm_available:
+            self.ai_brain.set_llm(self.llm)
+            self.ai_brain._db = self.db
+            self.ai_brain._sensors = self.sensors
+            self.midpath.set_llm(self.llm)
+            logger.info("AI大脑已接入LLM")
+
         # 6. 初始化命令处理器
         self._cmd_handler = CommandHandler(
             llm=self.llm if hasattr(self, 'llm') and self._llm_available else None,
@@ -86,6 +97,10 @@ class AgentOrchestrator:
 
         # 定时任务
         self._tasks.append(asyncio.create_task(self._scheduler()))
+
+        # AI 主动决策循环
+        if self._llm_available:
+            self._tasks.append(asyncio.create_task(self._ai_poll_cycle()))
 
         # 等待所有任务 (KeyboardInterrupt 时退出)
         try:
@@ -301,14 +316,27 @@ class AgentOrchestrator:
         while self._running:
             try:
                 reading = self.sensors.read(name)
+                old = self.fastpath.get_sensor(name)
+
+                # 异常检测: 读数跳变时跳过FastPath触发
+                anomaly = False
+                if old is not None and self._llm_available:
+                    anomaly = self.ai_brain.detect_anomaly(name, old, reading.value)
+                    if anomaly:
+                        logger.warning("ANOMALY: %s %.1f→%.1f 跳过自动操作", name, old, reading.value)
+                        self.db.log_event("anomaly", f"{name}: {old:.1f}→{reading.value:.1f}")
+
                 # 记录到数据库
                 self.db.log_sensor(name, reading.value, reading.unit)
-                # 推送 FastPath 规则引擎
-                self.fastpath.update_sensor(name, reading.value)
-                # 处理湿度 (温湿度传感器的附加数据)
+
+                # 推送 FastPath (仅非异常时)
+                if not anomaly:
+                    self.fastpath.update_sensor(name, reading.value)
+                # 处理湿度 (异常检查后仍记录，但不触发规则)
                 if reading.raw and "humidity" in reading.raw:
-                    self.fastpath.update_sensor("humidity", reading.raw["humidity"])
                     self.db.log_sensor("humidity", reading.raw["humidity"], "%")
+                    if not anomaly:
+                        self.fastpath.update_sensor("humidity", reading.raw["humidity"])
             except Exception as e:
                 logger.error("传感器 %s 读取失败: %s", name, e)
             await asyncio.sleep(interval)
@@ -334,10 +362,85 @@ class AgentOrchestrator:
 
             if t == "08:00":
                 await self._check_expiring_foods()
+                if self._llm_available:
+                    await self._ai_daily_insight()
             elif t == "07:00":
                 await self._daily_dress_advice()
 
             await asyncio.sleep(30)  # 每 30s 检查一次
+
+    async def _ai_poll_cycle(self):
+        """AI主动决策循环: 每AI_EVAL_INTERVAL秒读取传感器快照→LLM决定行动"""
+        while self._running:
+            try:
+                snapshot = {}
+                for name in ("co2", "temperature", "light"):
+                    try:
+                        r = self.sensors.read(name)
+                        snapshot[name] = r.value
+                    except Exception:
+                        pass
+                try:
+                    r = self.sensors.read("temperature")
+                    if r.raw and "humidity" in r.raw:
+                        snapshot["humidity"] = r.raw["humidity"]
+                except Exception:
+                    pass
+                try:
+                    snapshot["person_present"] = self.sensors.read("motion").value > 0.5
+                except Exception:
+                    snapshot["person_present"] = False
+
+                tool_chain, explanation = self.ai_brain.evaluate(snapshot)
+
+                if tool_chain:
+                    logger.info("AI决策: %s → %s", explanation, tool_chain)
+                    try:
+                        actions = registry.execute_plan(tool_chain)
+                    except Exception as e:
+                        logger.error("AI工具执行失败: %s", e)
+                        actions = []
+
+                    if actions and self._llm_available:
+                        context = {
+                            "temp": snapshot.get("temperature", "?"),
+                            "humidity": snapshot.get("humidity", "?"),
+                            "co2": snapshot.get("co2", "?"),
+                        }
+                        try:
+                            supplement = await self.midpath.supplement_ai_decision(
+                                explanation, actions, context
+                            )
+                            logger.info("AI补充: %s", supplement)
+                        except Exception as e:
+                            logger.warning("MidPath补充失败: %s", e)
+
+                    if self.db:
+                        for a in actions:
+                            self.db.log_event("ai_action",
+                                f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+                else:
+                    logger.debug("AI评估: 无需操作")
+            except Exception as e:
+                logger.error("AI评估周期异常: %s", e, exc_info=True)
+            await asyncio.sleep(AI_EVAL_INTERVAL)
+
+    async def _ai_daily_insight(self):
+        """AI生成24h趋势洞察"""
+        try:
+            trends = {}
+            for sensor in ("co2", "temperature", "light"):
+                data = self.db.query_sensor(sensor, 24)
+                if data:
+                    trends[sensor] = [d["value"] for d in data]
+            events = self.db.query_events(24)
+            insight = self.ai_brain.generate_insight(trends, events)
+            if insight:
+                logger.info("AI洞察: %s", insight)
+                self.tts.speak(insight)
+                self.db.log_event("ai_insight", insight)
+        except Exception as e:
+            logger.error("AI洞察生成失败: %s", e)
 
     async def _check_expiring_foods(self):
         expiring = self.db.list_foods(expiring_days=1)

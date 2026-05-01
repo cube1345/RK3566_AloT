@@ -66,6 +66,24 @@ class Database:
         c.execute("""
             CREATE INDEX IF NOT EXISTS idx_foods_expiry ON foods(expiry_date)
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_prefs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL UNIQUE,
+                value TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                count INTEGER DEFAULT 1,
+                last_updated REAL NOT NULL
+            )""")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS ai_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sensor_snapshot TEXT NOT NULL,
+                actions_taken TEXT,
+                llm_reasoning TEXT,
+                anomaly_detected INTEGER DEFAULT 0,
+                timestamp REAL NOT NULL
+            )""")
         self.conn.commit()
 
     # ---- 传感器日志 ----
@@ -155,6 +173,50 @@ class Database:
                 (category,),
             )
         return self._fetch_dict("SELECT * FROM home_tips ORDER BY created_at DESC")
+
+    # ---- 用户偏好学习 ----
+    def save_pref(self, key: str, value: str, confidence_delta: float = 0.15):
+        cur = self.conn.execute(
+            "SELECT confidence, count FROM user_prefs WHERE key=?", (key,)
+        )
+        row = cur.fetchone()
+        if row:
+            new_conf = min(1.0, row[0] + confidence_delta)
+            self.conn.execute(
+                "UPDATE user_prefs SET value=?, confidence=?, count=count+1, last_updated=? WHERE key=?",
+                (value, new_conf, time.time(), key),
+            )
+        else:
+            initial = min(1.0, 0.5 + confidence_delta)
+            self.conn.execute(
+                "INSERT INTO user_prefs(key, value, confidence, last_updated) VALUES (?,?,?,?)",
+                (key, value, initial, time.time()),
+            )
+        self.conn.commit()
+
+    def get_prefs(self, min_confidence: float = 0.3) -> dict:
+        rows = self.conn.execute(
+            "SELECT key, value FROM user_prefs WHERE confidence >= ?", (min_confidence,)
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def delete_pref(self, key: str):
+        self.conn.execute("DELETE FROM user_prefs WHERE key=?", (key,))
+        self.conn.commit()
+
+    # ---- AI决策审计 ----
+    def log_ai_decision(self, snapshot: str, actions: str, reasoning: str = "",
+                        anomaly: bool = False):
+        self.conn.execute(
+            "INSERT INTO ai_decisions(sensor_snapshot, actions_taken, llm_reasoning, anomaly_detected, timestamp) VALUES (?,?,?,?,?)",
+            (snapshot, actions, reasoning, 1 if anomaly else 0, time.time()),
+        )
+        self.conn.commit()
+
+    def recent_ai_decisions(self, limit: int = 5) -> list[dict]:
+        return self._fetch_dict(
+            "SELECT * FROM ai_decisions ORDER BY timestamp DESC LIMIT ?", (limit,)
+        )
 
     def close(self):
         self.conn.close()

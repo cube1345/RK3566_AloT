@@ -36,6 +36,31 @@ class MidPathHandler:
             logger.warning("MidPath LLM 补充失败: %s", e)
             return self._fallback_reply(actions_taken)
 
+    async def supplement_ai_decision(self, explanation: str, actions: list[dict],
+                                     context: dict) -> str:
+        """AI主动决策后的自然语言说明"""
+        if not self._llm or not self._llm.is_loaded:
+            return explanation or self._fallback_reply(actions)
+        action_str = "\n".join(
+            f"- {a.get('tool', '?')}: {a.get('result', '')}"
+            for a in actions
+        )
+        prompt = (
+            f"AI决定: {explanation}\n\n"
+            f"已执行:\n{action_str}\n\n"
+            f"当前: temp={context.get('temp', '?')}°C, "
+            f"humidity={context.get('humidity', '?')}%, "
+            f"CO₂={context.get('co2', '?')}ppm\n\n"
+            "用一句友好的中文告知用户发生了什么。"
+        )
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self._llm.generate, prompt)
+            return result.strip() or explanation
+        except Exception as e:
+            logger.warning("MidPath AI补充失败: %s", e)
+            return explanation
+
     def _build_prompt(self, user_input: str, actions: list[dict],
                       context: dict) -> str:
         """构造 MidPath 补充 prompt"""

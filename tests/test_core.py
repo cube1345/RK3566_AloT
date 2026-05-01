@@ -1087,3 +1087,134 @@ class TestSensorDrivers:
         # BH1750: raw=1456 → lux=1456/1.2=1213.3
         raw = 1456
         assert raw / 1.2 == pytest.approx(1213.3, rel=0.01)
+
+
+class TestAIBrain:
+    """AI决策引擎 + 偏好学习 + 异常检测测试"""
+
+    def test_parse_decision_output_valid(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        raw = "EXPLANATION: 温度过高。\nTOOLS: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26}}]"
+        explanation, chain = brain._parse_decision_output(raw)
+        assert explanation == "温度过高。"
+        assert len(chain) == 1
+        assert chain[0]["tool"] == "ac_control"
+
+    def test_parse_decision_output_no_tools(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        raw = "EXPLANATION: 传感器正常,无需操作。\nTOOLS: []"
+        explanation, chain = brain._parse_decision_output(raw)
+        assert "正常" in explanation
+        assert chain == []
+
+    def test_parse_decision_output_extra_text(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        raw = "好的，让我检查一下。\nEXPLANATION: CO₂偏高。\nTOOLS: [{\"tool\":\"set_air_purifier\",\"params\":{\"level\":1}}]\n已经完成。"
+        explanation, chain = brain._parse_decision_output(raw)
+        assert "CO₂" in explanation
+        assert len(chain) == 1
+        assert chain[0]["tool"] == "set_air_purifier"
+
+    def test_evaluate_no_llm_returns_empty(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain(llm=None)
+        chain, explanation = brain.evaluate({"co2": 800, "temperature": 25})
+        assert chain == []
+        assert explanation == ""
+
+    def test_detect_anomaly_no_db(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        assert brain.detect_anomaly("co2", 400, 500) is False
+
+    def test_learn_preference_no_db(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        brain.learn_preference("ai_ac_control", "set 24°C")
+
+    def test_get_recent_actions_context_empty(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        assert brain._get_recent_actions_context() == ""
+
+    def test_normalize_chain(self):
+        from core.ai_brain import _normalize_chain
+        result = _normalize_chain([
+            {"tool": "test1", "params": {}},
+            {"tool": "test2"},
+        ])
+        assert len(result) == 2
+        assert "params" in result[1]
+
+    def test_generate_insight_no_llm(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        result = brain.generate_insight({}, [])
+        assert result == ""
+
+
+class TestDatabaseAI:
+    """数据库新表和方法测试"""
+
+    def test_user_prefs_crud(self):
+        import os
+        import tempfile
+        from knowledge.database import Database
+        db = Database()
+
+        # 新建偏好
+        db.save_pref("ac_temp", "24", 0.2)
+        prefs = db.get_prefs(min_confidence=0.3)
+        assert "ac_temp" in prefs
+        assert prefs["ac_temp"] == "24"
+
+        # 重复覆盖: 置信度递增
+        db.save_pref("ac_temp", "24", 0.2)
+        # 验证count递增 (通过第二次save)
+
+        # 删除
+        db.delete_pref("ac_temp")
+        assert db.get_prefs(min_confidence=0.0) == {}
+
+        db.close()
+
+    def test_ai_decisions_log(self):
+        from knowledge.database import Database
+        db = Database()
+
+        db.log_ai_decision('{"co2": 800}', '[{"tool":"none"}]', "test reasoning")
+        recent = db.recent_ai_decisions(2)
+        assert len(recent) >= 1
+        assert recent[0]["actions_taken"] == '[{"tool":"none"}]'
+
+        db.close()
+
+
+class TestCommandReAct:
+    """ReAct循环测试"""
+
+    def test_complex_command_triggers_react(self):
+        from core.command_handler import CommandHandler
+        handler = CommandHandler(llm=None, db=None, sensors=None)
+        # 无LLM时ReAct走完整流程但tool_chain为空
+        result = handler.handle("家里太闷了，帮我检查一下所有设备")
+        assert "reply" in result
+        assert "actions" in result
+        assert "agent" in result
+
+    def test_simple_command_stays_one_shot(self):
+        from core.command_handler import CommandHandler
+        handler = CommandHandler(llm=None, db=None, sensors=None)
+        result = handler.handle("太热了")
+        assert "reply" in result
+        # 简单指令不走ReAct, 无iterations字段
+        assert "iterations" not in result
+
+    def test_hello_no_action(self):
+        from core.command_handler import CommandHandler
+        handler = CommandHandler(llm=None, db=None, sensors=None)
+        result = handler.handle("你好")
+        assert result["agent"] in ("life", "environment", "food")
