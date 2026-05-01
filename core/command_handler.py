@@ -7,6 +7,7 @@ from agents.environment_agent import SYSTEM_PROMPT as ENV_PROMPT, AGENT_NAME as 
 from agents.food_agent import SYSTEM_PROMPT as FOOD_PROMPT, AGENT_NAME as FOOD_NAME
 from agents.life_agent import SYSTEM_PROMPT as LIFE_PROMPT, AGENT_NAME as LIFE_NAME
 from core.tool_registry import registry
+from core.scene_engine import SceneEngine
 from config import AI_MAX_REACT_ITER
 
 logger = logging.getLogger("command")
@@ -44,11 +45,30 @@ class CommandHandler:
         self._llm = llm
         self._db = db
         self._sensors = sensors
+        self._scene_engine = SceneEngine(llm=llm)
 
     def set_llm(self, llm):
         self._llm = llm
+        self._scene_engine._llm = llm
 
     def handle(self, text: str, history: list[dict] | None = None) -> dict:
+        # 场景识别: 命中关键词 → 直接执行工具链
+        scene = self._scene_engine.recognize(text)
+        if scene:
+            logger.info("场景命中: %s → %d工具", scene["name"], len(scene["tools"]))
+            actions = registry.execute_plan(scene["tools"])
+            if self._db:
+                self._db.log_event("scene_trigger", f"{scene['name']}: {text[:80]}")
+                for a in actions:
+                    self._db.log_event("tool_exec",
+                        f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+            return {
+                "reply": scene["reply"],
+                "actions": actions,
+                "agent": "scene",
+                "llm_used": False,
+            }
+
         # 复杂指令走ReAct多步推理
         complex_kw = ("为什么", "怎么样", "检查", "分析", "如何", "怎么回事", "怎么办")
         if len(text) > 15 or any(kw in text for kw in complex_kw):

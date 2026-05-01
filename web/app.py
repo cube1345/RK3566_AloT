@@ -171,6 +171,44 @@ def api_preference_delete(key):
     return jsonify({"status": "ok"})
 
 
+# ===== 主动反问 (v5.1) =====
+
+@app.route("/api/pending_question")
+def api_pending_question():
+    """返回当前AI待答问题"""
+    if orchestrator and orchestrator.ai_brain:
+        q = orchestrator.ai_brain.get_pending_question()
+        if q:
+            return jsonify(q)
+    return jsonify({})
+
+
+@app.route("/api/answer_question", methods=["POST"])
+def api_answer_question():
+    """用户回复AI反问"""
+    data = request.json or {}
+    answer = data.get("answer", "")
+    if not answer or not orchestrator or not orchestrator.ai_brain:
+        return jsonify({"status": "ignored"})
+
+    q = orchestrator.ai_brain.get_pending_question()
+    if not q:
+        return jsonify({"status": "no_question"})
+
+    # 确认则执行pending工具
+    positive = any(kw in answer for kw in ("是", "好", "可以", "行", "yes", "ok", "通风"))
+    if positive and q.get("pending_tools"):
+        try:
+            actions = registry.execute_plan(q["pending_tools"])
+            orchestrator.ai_brain.clear_pending_question()
+            return jsonify({"status": "executed", "actions": actions})
+        except Exception as e:
+            return jsonify({"status": "error", "detail": str(e)})
+
+    orchestrator.ai_brain.clear_pending_question()
+    return jsonify({"status": "dismissed"})
+
+
 # ===== 页面 =====
 
 @app.route("/")

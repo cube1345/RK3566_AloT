@@ -84,6 +84,19 @@ class Database:
                 anomaly_detected INTEGER DEFAULT 0,
                 timestamp REAL NOT NULL
             )""")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS routines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                pattern_type TEXT,
+                pattern_data TEXT NOT NULL,
+                actions TEXT,
+                auto_detected INTEGER DEFAULT 0,
+                confidence REAL DEFAULT 0.5,
+                last_fired_at REAL,
+                enabled INTEGER DEFAULT 1,
+                created_at REAL DEFAULT (strftime('%s','now'))
+            )""")
         self.conn.commit()
 
     # ---- 传感器日志 ----
@@ -217,6 +230,76 @@ class Database:
         return self._fetch_dict(
             "SELECT * FROM ai_decisions ORDER BY timestamp DESC LIMIT ?", (limit,)
         )
+
+    # ---- 知识查询 (v5.1 - 历史对比) ----
+    def query_sensor_same_hour(self, sensor: str, days: int = 7) -> list[dict]:
+        """同时段历史对比：过去N天同一小时的数据"""
+        cutoff = time.time() - days * 86400
+        return self._fetch_dict(
+            """SELECT value, unit, timestamp FROM sensor_log
+               WHERE sensor=? AND timestamp>=?
+                 AND strftime('%H', datetime(timestamp, 'unixepoch')) = strftime('%H', datetime(?, 'unixepoch'))
+               ORDER BY timestamp""",
+            (sensor, cutoff, time.time()),
+        )
+
+    def query_sensor_hourly_profile(self, sensor: str, days: int = 7) -> list[dict]:
+        """日均曲线：按小时分组的 AVG/MIN/MAX"""
+        cutoff = time.time() - days * 86400
+        return self._fetch_dict(
+            """SELECT strftime('%H', datetime(timestamp, 'unixepoch')) AS hour,
+                      AVG(value) AS avg, MIN(value) AS min, MAX(value) AS max, COUNT(*) AS n
+               FROM sensor_log WHERE sensor=? AND timestamp>=?
+               GROUP BY hour ORDER BY hour""",
+            (sensor, cutoff),
+        )
+
+    def query_sensor_correlation(self, sensor_a: str, sensor_b: str,
+                                  hours: int = 24) -> list[dict]:
+        """两传感器时间对齐关联 (分钟桶 JOIN)"""
+        cutoff = time.time() - hours * 3600
+        return self._fetch_dict(
+            """SELECT a.bucket, a.value AS a_val, b.value AS b_val FROM
+               (SELECT (timestamp/60)*60 AS bucket, AVG(value) AS value
+                FROM sensor_log WHERE sensor=? AND timestamp>=? GROUP BY bucket) a
+               JOIN
+               (SELECT (timestamp/60)*60 AS bucket, AVG(value) AS value
+                FROM sensor_log WHERE sensor=? AND timestamp>=? GROUP BY bucket) b
+               ON a.bucket=b.bucket ORDER BY a.bucket""",
+            (sensor_a, cutoff, sensor_b, cutoff),
+        )
+
+    # ---- 规律/日程 (v5.1) ----
+    def save_routine(self, name: str, pattern_data: str,
+                      pattern_type: str = "", actions: str = "",
+                      auto_detected: bool = False) -> int:
+        c = self.conn.execute(
+            "INSERT INTO routines(name, pattern_type, pattern_data, actions, auto_detected) VALUES (?,?,?,?,?)",
+            (name, pattern_type, pattern_data, actions, 1 if auto_detected else 0),
+        )
+        self.conn.commit()
+        return c.lastrowid
+
+    def list_routines(self, enabled_only: bool = True) -> list[dict]:
+        if enabled_only:
+            return self._fetch_dict("SELECT * FROM routines WHERE enabled=1 ORDER BY id")
+        return self._fetch_dict("SELECT * FROM routines ORDER BY id")
+
+    def update_routine(self, routine_id: int, **kwargs):
+        sets = ", ".join(f"{k}=?" for k in kwargs)
+        vals = list(kwargs.values()) + [routine_id]
+        self.conn.execute(f"UPDATE routines SET {sets} WHERE id=?", vals)
+        self.conn.commit()
+
+    def fire_routine(self, routine_id: int):
+        self.conn.execute(
+            "UPDATE routines SET last_fired_at=? WHERE id=?", (time.time(), routine_id),
+        )
+        self.conn.commit()
+
+    def delete_routine(self, routine_id: int):
+        self.conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
+        self.conn.commit()
 
     def close(self):
         self.conn.close()

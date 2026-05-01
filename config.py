@@ -140,6 +140,66 @@ AI_MAX_REACT_ITER = 2          # ReAct最大迭代轮次
 AI_ANOMALY_THRESHOLD = 3.0     # z-score异常检测阈值
 AI_MIN_CONFIDENCE = 0.3        # 偏好最低置信度(低于此值不注入LLM)
 
+# ===== 场景识别 =====
+SCENE_TRIGGERS = {
+    "sleep": {
+        "name": "睡觉",
+        "keywords": ["晚安", "睡了", "睡觉", "困了", "休息"],
+        "auto_hour_range": (22, 7),  # 22:00-07:00自动触发
+        "tools": [
+            {"tool": "set_light", "params": {"state": "off"}},
+            {"tool": "ac_control", "params": {"mode": "cool", "temp": 26, "fan_speed": "low"}},
+            {"tool": "set_fan", "params": {"speed": 0}},
+        ],
+        "reply": "晚安！已关灯、空调26°C、免打扰模式。好梦～",
+    },
+    "away": {
+        "name": "出门",
+        "keywords": ["出门", "走了", "拜拜", "再见", "离开"],
+        "tools": [
+            {"tool": "set_light", "params": {"state": "off"}},
+            {"tool": "ac_control", "params": {"mode": "off"}},
+            {"tool": "set_fan", "params": {"speed": 0}},
+            {"tool": "set_air_purifier", "params": {"level": 0}},
+        ],
+        "reply": "已关闭全部设备。路上注意安全！",
+    },
+    "home": {
+        "name": "回家",
+        "keywords": ["回来了", "到家", "我回来了", "到家了"],
+        "tools": [
+            {"tool": "ac_control", "params": {"mode": "cool", "temp": 26, "fan_speed": "auto"}},
+        ],
+        "reply": "欢迎回家！空调已开启。",
+    },
+    "movie": {
+        "name": "观影",
+        "keywords": ["看电影", "看剧", "追剧", "观影"],
+        "tools": [
+            {"tool": "set_light", "params": {"state": "on", "brightness": 50}},
+            {"tool": "ac_control", "params": {"mode": "cool", "temp": 25, "fan_speed": "low"}},
+        ],
+        "reply": "观影模式：灯光调暗、空调25°C、免打扰。",
+    },
+    "wakeup": {
+        "name": "起床",
+        "keywords": ["起床", "早安", "早上好", "醒了"],
+        "tools": [
+            {"tool": "set_light", "params": {"state": "on", "brightness": 200}},
+            {"tool": "ac_control", "params": {"mode": "off"}},
+        ],
+        "reply": "早上好！新的一天开始了。",
+    },
+    "cooking": {
+        "name": "烹饪",
+        "keywords": ["做饭", "炒菜", "煮饭", "烹饪", "烧菜"],
+        "tools": [
+            {"tool": "set_air_purifier", "params": {"level": 2}},
+        ],
+        "reply": "开始做饭了，已开通风净化。",
+    },
+}
+
 # ===== 继电器触发极性 =====
 # 大多数国产模块是 LOW 触发 (IN=LOW → 继电器吸合)
 # 少数模块是 HIGH 触发或可跳线切换

@@ -18,19 +18,27 @@ class AIBrain:
         self._db = db
         self._sensors = sensors
         self._recent_decisions: list[dict] = []
+        self._pending_question: dict | None = None
 
     def set_llm(self, llm):
         self._llm = llm
 
     # ===== P0: AI 决策引擎 =====
 
-    def evaluate(self, sensor_snapshot: dict) -> tuple[list[dict], str]:
-        """每30s评估传感器快照，返回 (tool_chain, explanation)"""
+    def evaluate(self, sensor_snapshot: dict) -> dict:
+        """
+        每30s评估传感器快照。
+        返回:
+          {"type": "action", "tool_chain": [...], "explanation": "..."}
+          {"type": "question", "text": "...", "options": [...], "pending_tools": [...]}
+          {"type": "none"}
+        """
         if not self._llm or not self._llm.is_loaded:
-            return [], ""
+            return {"type": "none"}
 
         recent = self._get_recent_actions_context()
         prefs = self._get_preferences_context()
+        knowledge = self._build_knowledge_context(sensor_snapshot)
 
         system_prompt = (
             "你是智能家居AI管家。基于传感器数据决定是否需要操作。\n\n"
@@ -39,18 +47,15 @@ class AIBrain:
             "2. 不重复刚执行的操作。\n"
             "3. 尊重用户偏好。\n"
             "4. CO₂>1500需通风, 温度>30需降温, 温度<16需升温。\n"
-            "5. 有人→舒适优先, 无人→节能优先。\n\n"
-            "输出格式(严格):\n"
-            "EXPLANATION: <一句中文解释>\n"
-            "TOOLS: <JSON数组, 不需要则输出[]>\n\n"
+            "5. 有人→舒适优先, 无人→节能优先。\n"
+            "6. 若不确定是否该操作(如检测到烹饪活动但CO₂高), 反问用户。\n\n"
+            "输出格式(三选一):\n"
+            "[行动] EXPLANATION: <一句中文解释>\nTOOLS: <JSON数组>\n"
+            "[反问] QUESTION: <问题> OPTIONS: [\"选项1\",\"选项2\"]\nPENDING: <JSON数组>\n"
+            "[无操作] EXPLANATION: <原因>\nTOOLS: []\n\n"
             "可用工具: ac_control(mode,temp,fan_speed), set_fan(speed), "
             "set_light(state,brightness), set_air_purifier(level), "
-            "tts(text), notify_display(title,body)\n\n"
-            "示例:\n"
-            "EXPLANATION: 温度29°C湿度75%,开启空调降温。\n"
-            'TOOLS: [{"tool":"ac_control","params":{"mode":"cool","temp":26,"fan_speed":"auto"}},{"tool":"set_fan","params":{"speed":1}}]\n\n'
-            "EXPLANATION: 传感器正常,无需操作。\n"
-            "TOOLS: []\n\n"
+            "tts(text), notify_display(title,body)\n"
             "只输出上述格式。禁止额外文字。"
         )
 
@@ -63,7 +68,8 @@ class AIBrain:
         user_prompt = (
             f"当前传感器:\n"
             f"  CO₂={co2}ppm 温度={temp}°C 湿度={humidity}% 光照={light}lux {person}\n"
-            + (f"\n最近操作: {recent}\n" if recent else "\n")
+            + (f"\n历史参考:\n{knowledge}\n" if knowledge else "\n")
+            + (f"最近操作: {recent}\n" if recent else "")
             + (f"用户偏好: {prefs}\n" if prefs else "")
             + "\n需要操作吗？"
         )
@@ -72,11 +78,12 @@ class AIBrain:
             raw = self._llm.generate(user_prompt, system=system_prompt)
         except Exception as e:
             logger.warning("AI决策LLM调用失败: %s", e)
-            return [], ""
+            return {"type": "none"}
 
-        explanation, tool_chain = self._parse_decision_output(raw)
+        result = self._parse_decision_output(raw)
 
         if self._db:
+            tool_chain = result.get("tool_chain", [])
             self._db.log_ai_decision(
                 json.dumps(sensor_snapshot, ensure_ascii=False),
                 json.dumps(tool_chain, ensure_ascii=False),
@@ -85,13 +92,19 @@ class AIBrain:
 
         self._recent_decisions.append({
             "snapshot": sensor_snapshot,
-            "actions": tool_chain,
+            "actions": result.get("tool_chain", []),
             "time": time.time(),
         })
         if len(self._recent_decisions) > 10:
             self._recent_decisions = self._recent_decisions[-10:]
 
-        return tool_chain, explanation
+        # 记录待答问题
+        if result.get("type") == "question":
+            self._pending_question = result
+        else:
+            self._pending_question = None
+
+        return result
 
     # ===== P3: 异常检测 =====
 
@@ -152,10 +165,31 @@ class AIBrain:
 
     # ===== 内部方法 =====
 
-    def _parse_decision_output(self, raw: str) -> tuple[str, list[dict]]:
-        """解析 LLM 输出: EXPLANATION + TOOLS"""
+    def _parse_decision_output(self, raw: str) -> dict:
+        """解析 LLM 输出 → {"type":"action"|"question"|"none", ...}"""
         explanation = ""
         tool_chain = []
+
+        # 检测反问格式: QUESTION: ... OPTIONS: [...] PENDING: [...]
+        q_m = re.search(r'QUESTION:\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
+        if q_m:
+            q_text = q_m.group(1).strip()
+            options = []
+            pending_tools = []
+            opt_m = re.search(r'OPTIONS:\s*(\[[\s\S]*?\])', raw, re.IGNORECASE)
+            if opt_m:
+                try:
+                    options = json.loads(opt_m.group(1))
+                except json.JSONDecodeError:
+                    options = ["是", "不用"]
+            pend_m = re.search(r'PENDING:\s*(\[[\s\S]*?\])', raw, re.IGNORECASE)
+            if pend_m:
+                try:
+                    pending_tools = _normalize_chain(json.loads(pend_m.group(1)))
+                except json.JSONDecodeError:
+                    pass
+            return {"type": "question", "text": q_text,
+                    "options": options, "pending_tools": pending_tools}
 
         exp_m = re.search(r'EXPLANATION:\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
         if exp_m:
@@ -174,7 +208,9 @@ class AIBrain:
             from core.command_handler import _parse_tool_chain
             tool_chain = _parse_tool_chain(raw)
 
-        return explanation, tool_chain
+        if tool_chain:
+            return {"type": "action", "tool_chain": tool_chain, "explanation": explanation}
+        return {"type": "none"}
 
     def _get_recent_actions_context(self) -> str:
         if not self._recent_decisions:
@@ -194,6 +230,38 @@ class AIBrain:
         if not prefs:
             return ""
         return "; ".join(f"{k}:{v}" for k, v in prefs.items())
+
+    def _build_knowledge_context(self, snapshot: dict) -> str:
+        """构建知识上下文: 历史同时段对比 + 日均趋势"""
+        if not self._db:
+            return ""
+        parts = []
+        for sensor in ("co2", "temperature"):
+            try:
+                same_hour = self._db.query_sensor_same_hour(sensor, days=7)
+                if same_hour and sensor in snapshot:
+                    vals = [r["value"] for r in same_hour]
+                    current = snapshot[sensor]
+                    if isinstance(current, (int, float)) and vals:
+                        avg = sum(vals) / len(vals)
+                        pct = abs(current - avg) / max(abs(avg), 1)
+                        if pct > 0.15:
+                            direction = "偏高" if current > avg else "偏低"
+                            parts.append(
+                                f"{sensor}当前{current:.0f}, "
+                                f"过去7天同时段均值{avg:.0f} ({direction}{abs(current-avg):.0f})"
+                            )
+            except Exception:
+                continue
+        return "\n".join(parts) if parts else ""
+
+    def get_pending_question(self) -> dict | None:
+        """返回当前待答问题"""
+        return self._pending_question
+
+    def clear_pending_question(self):
+        """清除待答问题"""
+        self._pending_question = None
 
 
 def _normalize_chain(chain: list) -> list[dict]:

@@ -1096,34 +1096,34 @@ class TestAIBrain:
         from core.ai_brain import AIBrain
         brain = AIBrain()
         raw = "EXPLANATION: 温度过高。\nTOOLS: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26}}]"
-        explanation, chain = brain._parse_decision_output(raw)
-        assert explanation == "温度过高。"
-        assert len(chain) == 1
-        assert chain[0]["tool"] == "ac_control"
+        result = brain._parse_decision_output(raw)
+        assert result["type"] == "action"
+        assert result["explanation"] == "温度过高。"
+        assert len(result["tool_chain"]) == 1
+        assert result["tool_chain"][0]["tool"] == "ac_control"
 
     def test_parse_decision_output_no_tools(self):
         from core.ai_brain import AIBrain
         brain = AIBrain()
         raw = "EXPLANATION: 传感器正常,无需操作。\nTOOLS: []"
-        explanation, chain = brain._parse_decision_output(raw)
-        assert "正常" in explanation
-        assert chain == []
+        result = brain._parse_decision_output(raw)
+        assert result["type"] == "none"
 
     def test_parse_decision_output_extra_text(self):
         from core.ai_brain import AIBrain
         brain = AIBrain()
         raw = "好的，让我检查一下。\nEXPLANATION: CO₂偏高。\nTOOLS: [{\"tool\":\"set_air_purifier\",\"params\":{\"level\":1}}]\n已经完成。"
-        explanation, chain = brain._parse_decision_output(raw)
-        assert "CO₂" in explanation
-        assert len(chain) == 1
-        assert chain[0]["tool"] == "set_air_purifier"
+        result = brain._parse_decision_output(raw)
+        assert result["type"] == "action"
+        assert "CO₂" in result["explanation"]
+        assert len(result["tool_chain"]) == 1
+        assert result["tool_chain"][0]["tool"] == "set_air_purifier"
 
     def test_evaluate_no_llm_returns_empty(self):
         from core.ai_brain import AIBrain
         brain = AIBrain(llm=None)
-        chain, explanation = brain.evaluate({"co2": 800, "temperature": 25})
-        assert chain == []
-        assert explanation == ""
+        result = brain.evaluate({"co2": 800, "temperature": 25})
+        assert result["type"] == "none"
 
     def test_detect_anomaly_no_db(self):
         from core.ai_brain import AIBrain
@@ -1218,3 +1218,205 @@ class TestCommandReAct:
         handler = CommandHandler(llm=None, db=None, sensors=None)
         result = handler.handle("你好")
         assert result["agent"] in ("life", "environment", "food")
+
+
+class TestSceneEngine:
+    """v5.1 场景识别引擎"""
+
+    def test_recognize_sleep(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        scene = engine.recognize("晚安")
+        assert scene is not None
+        assert scene["scene_id"] == "sleep"
+        assert scene["reply"] == "晚安！已关灯、空调26°C、免打扰模式。好梦～"
+        assert len(scene["tools"]) == 3
+
+    def test_recognize_away(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        scene = engine.recognize("我出门了")
+        assert scene is not None
+        assert scene["scene_id"] == "away"
+        assert len(scene["tools"]) == 4
+
+    def test_recognize_cooking(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        scene = engine.recognize("开始做饭")
+        assert scene is not None
+        assert scene["scene_id"] == "cooking"
+        assert scene["tools"][0]["tool"] == "set_air_purifier"
+
+    def test_recognize_no_match(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        assert engine.recognize("今天天气怎么样") is None
+        assert engine.recognize("你好") is None
+
+    def test_auto_trigger_sleep_night_no_motion(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        # 凌晨1点 + 无人 + 灯灭 → 触发
+        scene = engine.check_auto_trigger(hour=1, motion_active=False, light_on=False)
+        assert scene is not None
+        assert scene["scene_id"] == "sleep"
+        assert scene["auto"] is True
+
+    def test_auto_trigger_sleep_daytime_skip(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        # 下午2点 → 不触发
+        assert engine.check_auto_trigger(hour=14, motion_active=False, light_on=False) is None
+
+    def test_auto_trigger_sleep_person_present_skip(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        # 有人 → 不触发
+        assert engine.check_auto_trigger(hour=1, motion_active=True, light_on=False) is None
+
+    def test_list_scenes(self):
+        from core.scene_engine import SceneEngine
+        engine = SceneEngine()
+        scenes = engine.list_scenes()
+        assert len(scenes) == 6
+        ids = [s["id"] for s in scenes]
+        assert "sleep" in ids
+        assert "away" in ids
+        assert "movie" in ids
+
+
+class TestDatabaseKnowledge:
+    """v5.1 知识查询 + routines CRUD"""
+
+    def test_routines_crud(self):
+        from knowledge.database import Database
+        db = Database()
+        rid = db.save_routine("每日通风", '{"hour": 9}', "hourly",
+                              '[{"tool":"set_fan","params":{"speed":2}}]')
+        assert rid > 0
+
+        routines = db.list_routines(enabled_only=True)
+        assert any(r["id"] == rid for r in routines)
+
+        db.update_routine(rid, confidence=0.8)
+        routines = db.list_routines(enabled_only=False)
+        found = [r for r in routines if r["id"] == rid]
+        assert len(found) == 1
+
+        db.fire_routine(rid)
+        found = db.list_routines(enabled_only=False)
+        r = [r for r in found if r["id"] == rid][0]
+        assert r["last_fired_at"] is not None
+
+        db.delete_routine(rid)
+        routines = db.list_routines(enabled_only=False)
+        assert not any(r["id"] == rid for r in routines)
+        db.close()
+
+    def test_query_sensor_same_hour(self):
+        from knowledge.database import Database
+        db = Database()
+        db.log_sensor("co2", 800)
+        db.log_sensor("co2", 820)
+        result = db.query_sensor_same_hour("co2", days=7)
+        assert isinstance(result, list)
+        assert len(result) >= 1
+        assert "value" in result[0]
+        assert "unit" in result[0]
+        db.close()
+
+    def test_query_sensor_hourly_profile(self):
+        from knowledge.database import Database
+        db = Database()
+        db.log_sensor("temperature", 25.0)
+        result = db.query_sensor_hourly_profile("temperature", days=7)
+        assert isinstance(result, list)
+        if result:
+            assert "hour" in result[0]
+            assert "avg" in result[0]
+            assert "min" in result[0]
+            assert "max" in result[0]
+            assert "n" in result[0]
+        db.close()
+
+    def test_query_sensor_correlation(self):
+        from knowledge.database import Database
+        db = Database()
+        now = __import__('time').time()
+        db.log_sensor("co2", 800)
+        db.log_sensor("temperature", 25.0)
+        result = db.query_sensor_correlation("co2", "temperature", hours=24)
+        assert isinstance(result, list)
+        if result:
+            assert "bucket" in result[0]
+            assert "a_val" in result[0]
+            assert "b_val" in result[0]
+        db.close()
+
+
+class TestAIBrainQuestion:
+    """v5.1 反问 + 知识上下文"""
+
+    def test_parse_question_output(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        raw = ('QUESTION: CO₂偏高但你可能在做饭，要开窗通风吗？\n'
+               'OPTIONS: ["是，通风", "不用"]\n'
+               'PENDING: [{"tool":"set_fan","params":{"speed":2}}]')
+        result = brain._parse_decision_output(raw)
+        assert result["type"] == "question"
+        assert "CO₂" in result["text"]
+        assert len(result["options"]) == 2
+        assert result["pending_tools"][0]["tool"] == "set_fan"
+
+    def test_pending_question_lifecycle(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        assert brain.get_pending_question() is None
+
+        brain._pending_question = {"type": "question", "text": "测试?"}
+        assert brain.get_pending_question() is not None
+
+        brain.clear_pending_question()
+        assert brain.get_pending_question() is None
+
+    def test_build_knowledge_context_no_db(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        ctx = brain._build_knowledge_context({"co2": 800, "temperature": 25})
+        assert ctx == ""
+
+    def test_evaluate_returns_question_type_dict(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain(llm=None)
+        result = brain.evaluate({"co2": 800, "temperature": 25})
+        assert isinstance(result, dict)
+        assert "type" in result
+        assert result["type"] == "none"
+
+
+class TestCommandScene:
+    """v5.1 场景命令集成"""
+
+    def test_scene_keyword_sleep(self):
+        from core.command_handler import CommandHandler
+        handler = CommandHandler(llm=None, db=None, sensors=None)
+        result = handler.handle("晚安")
+        assert result["agent"] == "scene"
+        assert "关灯" in result["reply"] or "空调" in result["reply"]
+
+    def test_scene_away_executes_tools(self):
+        from core.command_handler import CommandHandler
+        handler = CommandHandler(llm=None, db=None, sensors=None)
+        result = handler.handle("我出门了")
+        assert result["agent"] == "scene"
+        assert len(result["actions"]) >= 1
+
+    def test_no_scene_normal_route(self):
+        from core.command_handler import CommandHandler
+        handler = CommandHandler(llm=None, db=None, sensors=None)
+        result = handler.handle("太热了")
+        # 不是场景关键词 → 走正常路由
+        assert result["agent"] != "scene"
+        assert "reply" in result

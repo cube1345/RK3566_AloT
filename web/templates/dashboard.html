@@ -132,6 +132,10 @@ input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; 
         <button class="btn btn-primary" onclick="sendCommand()">发送</button>
       </div>
       <div id="cmdReply" style="margin-top:12px; padding:12px; background:#0f172a; border-radius:8px; min-height:60px;"></div>
+      <div id="questionBox" style="margin-top:12px; padding:12px; background:#78350f; border-radius:8px; display:none;">
+        <div style="color:#fcd34d; margin-bottom:8px;">🤔 <span id="questionText"></span></div>
+        <div id="questionActions"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -303,7 +307,35 @@ async function sendCommand() {
   loadEvents();
 }
 
+// ===== AI反问轮询 (v5.1) =====
+async function pollQuestion() {
+  const q = await fetchJSON('/api/pending_question');
+  const box = document.getElementById('questionBox');
+  if (!q || !q.text) {
+    box.style.display = 'none';
+    return;
+  }
+  document.getElementById('questionText').textContent = q.text;
+  const actions = document.getElementById('questionActions');
+  const opts = q.options || ['是', '不用'];
+  actions.innerHTML = opts.map((opt, i) =>
+    `<button class="btn btn-sm ${i===0?'btn-success':'btn-danger'}" onclick="answerQuestion('${opt}')">${opt}</button>`
+  ).join(' ');
+  box.style.display = 'block';
+}
+
+async function answerQuestion(answer) {
+  await fetch('/api/answer_question', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({answer}),
+  });
+  document.getElementById('questionBox').style.display = 'none';
+  loadEvents();
+}
+
 // ===== 定时刷新 =====
+setInterval(pollQuestion, 5000);
 setInterval(updateSensors, 3000);
 setInterval(updateDevices, 5000);
 setInterval(loadEvents, 10000);

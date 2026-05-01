@@ -23,6 +23,7 @@ from devices.purifier import AirPurifierDevice
 from knowledge.database import Database
 from tts.speaker import TTSEngine
 from core.ai_brain import AIBrain
+from core.scene_engine import SceneEngine
 
 logger = logging.getLogger("agent")
 
@@ -36,6 +37,7 @@ class AgentOrchestrator:
         self.tts = TTSEngine()
         self.midpath = MidPathHandler()
         self.ai_brain = AIBrain()
+        self.scene_engine = SceneEngine()
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._llm_available = False
@@ -391,34 +393,56 @@ class AgentOrchestrator:
                 except Exception:
                     snapshot["person_present"] = False
 
-                tool_chain, explanation = self.ai_brain.evaluate(snapshot)
+                # 场景自动触发 (v5.1): 深夜无人无灯 → 睡觉场景
+                try:
+                    light_on = snapshot.get("light", 0) > 50
+                    motion = snapshot.get("person_present", False)
+                    hour = time.localtime().tm_hour
+                    auto_scene = self.scene_engine.check_auto_trigger(hour, motion, light_on)
+                    if auto_scene:
+                        logger.info("自动场景: %s", auto_scene["name"])
+                        registry.execute_plan(auto_scene["tools"])
+                        if self.db:
+                            self.db.log_event("scene_trigger",
+                                f"auto:{auto_scene['name']}")
+                        await asyncio.sleep(AI_EVAL_INTERVAL)
+                        continue
+                except Exception as e:
+                    logger.warning("场景自动触发异常: %s", e)
 
-                if tool_chain:
-                    logger.info("AI决策: %s → %s", explanation, tool_chain)
-                    try:
-                        actions = registry.execute_plan(tool_chain)
-                    except Exception as e:
-                        logger.error("AI工具执行失败: %s", e)
-                        actions = []
+                result = self.ai_brain.evaluate(snapshot)
 
-                    if actions and self._llm_available:
-                        context = {
-                            "temp": snapshot.get("temperature", "?"),
-                            "humidity": snapshot.get("humidity", "?"),
-                            "co2": snapshot.get("co2", "?"),
-                        }
+                if result.get("type") == "question":
+                    logger.info("AI反问: %s", result.get("text"))
+                elif result.get("type") == "action":
+                    tool_chain = result.get("tool_chain", [])
+                    explanation = result.get("explanation", "")
+                    if tool_chain:
+                        logger.info("AI决策: %s → %s", explanation, tool_chain)
                         try:
-                            supplement = await self.midpath.supplement_ai_decision(
-                                explanation, actions, context
-                            )
-                            logger.info("AI补充: %s", supplement)
+                            actions = registry.execute_plan(tool_chain)
                         except Exception as e:
-                            logger.warning("MidPath补充失败: %s", e)
+                            logger.error("AI工具执行失败: %s", e)
+                            actions = []
 
-                    if self.db:
-                        for a in actions:
-                            self.db.log_event("ai_action",
-                                f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+                        if actions and self._llm_available:
+                            context = {
+                                "temp": snapshot.get("temperature", "?"),
+                                "humidity": snapshot.get("humidity", "?"),
+                                "co2": snapshot.get("co2", "?"),
+                            }
+                            try:
+                                supplement = await self.midpath.supplement_ai_decision(
+                                    explanation, actions, context
+                                )
+                                logger.info("AI补充: %s", supplement)
+                            except Exception as e:
+                                logger.warning("MidPath补充失败: %s", e)
+
+                        if self.db:
+                            for a in actions:
+                                self.db.log_event("ai_action",
+                                    f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
                 else:
                     logger.debug("AI评估: 无需操作")
             except Exception as e:
