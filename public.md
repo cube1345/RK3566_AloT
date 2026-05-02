@@ -82,9 +82,10 @@
   - [x] 安装基础包 (git, python3-pip, python3-venv, i2c-tools, gpiod)
   - [x] 启用 I2C (/dev/i2c-1 就绪)
   - [x] 上传代码 (GitHub git clone 成功)
-  - [ ] 创建 venv (Debian venv 缺 pip, 需 --without-pip + get-pip.py)
-  - [ ] 安装 Python 依赖 (flask, pyserial, smbus2, gpiod, pytest, requests)
-  - [ ] 编译 llama.cpp (make -j4)
+  - [x] 创建 venv (--without-pip + get-pip.py 解决 Debian venv 缺 pip)
+  - [x] 安装 Python 依赖 (flask, pyserial, smbus2, gpiod, pytest, requests 全部 OK)
+  - [x] 核心测试通过 (115 passed, 0 failed, 0.69s)
+  - [ ] 编译 llama.cpp (网络问题, 从以太网切 WiFi 后重试 clone)
   - [ ] 下载 LLM 模型 (941MB GGUF)
   - [ ] 配置 .env
   - [ ] 跑测试
