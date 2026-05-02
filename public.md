@@ -78,17 +78,18 @@
 - [ ] 传感器接线 (硬件未到)
 - [ ] Pi 5 部署 (进行中, 见下方进度)
   - [x] 烧录系统 (Debian Trixie, SSH 就绪)
-  - [x] 切换清华镜像源 (删除了默认 debian.sources, 清华镜像 OK)
-  - [x] 安装基础包 (git, python3-pip, python3-venv, i2c-tools, gpiod 已装, dpkg 修复)
-  - [x] 启用 I2C (/dev/i2c-1 就绪, /boot/firmware/config.txt 已配置)
-  - [ ] 上传代码 (推 GitHub 后 git clone)
-  - [ ] 创建 venv + 安装 Python 依赖
+  - [x] 切换清华镜像源 (删除了默认 debian.sources, 多次修复 dpkg 缓存/status)
+  - [x] 安装基础包 (git, python3-pip, python3-venv, i2c-tools, gpiod)
+  - [x] 启用 I2C (/dev/i2c-1 就绪)
+  - [x] 上传代码 (GitHub git clone 成功)
+  - [ ] 创建 venv (Debian venv 缺 pip, 需 --without-pip + get-pip.py)
+  - [ ] 安装 Python 依赖 (flask, pyserial, smbus2, gpiod, pytest, requests)
   - [ ] 编译 llama.cpp (make -j4)
   - [ ] 下载 LLM 模型 (941MB GGUF)
-  - [ ] 配置 .env (AGENT_MOCK=0, sgp30+dht11, pi5)
-  - [ ] 跑测试 (先 -k 'not TestSensorDrivers')
+  - [ ] 配置 .env
+  - [ ] 跑测试
   - [ ] 启动 main.py + Dashboard 验证
-- [ ] PDF方案文档排版 (方案已就绪: docs/方案文档.md)
+- [ ] PDF方案文档排版
 - [ ] 演示视频录制 (≤3min)
 
 ## 合作方式
