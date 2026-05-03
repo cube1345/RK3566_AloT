@@ -1,5 +1,6 @@
-# llama.cpp 后端 (CPU 推理)
+# llama.cpp 后端 (CPU 推理) — 专用工作线程确保线程安全
 import logging
+import queue
 import threading
 from pathlib import Path
 
@@ -14,8 +15,12 @@ class LlamaCppBackend:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._model = None
-        self._lock = threading.Lock()
         self._load()
+
+        # 专用工作线程: 所有 llama.cpp 调用在该线程执行
+        self._queue: queue.Queue = queue.Queue()
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
 
     def _load(self):
         from llama_cpp import Llama
@@ -24,10 +29,37 @@ class LlamaCppBackend:
         self._model = Llama(
             model_path=path,
             n_ctx=self.n_ctx,
-            n_threads=4,
+            n_threads=2,
             verbose=False,
         )
         logger.info("模型加载完成")
+
+    def _worker_loop(self):
+        while True:
+            try:
+                messages, result_event = self._queue.get()
+                if messages is None:  # 停止信号
+                    break
+                output = self._do_generate(messages)
+                result_event["output"] = output
+                result_event.set()
+            except Exception as e:
+                logger.error("Worker LLM异常: %s", e)
+
+    def _do_generate(self, messages: list[dict]) -> str:
+        if not self._model:
+            return ""
+        try:
+            result = self._model.create_chat_completion(
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                stop=["<|im_end|>", "<|endoftext|>"],
+            )
+            return result["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.error("推理失败: %s", e)
+            return ""
 
     def generate(self, prompt: str, system: str = "") -> str:
         if not self._model:
@@ -38,15 +70,8 @@ class LlamaCppBackend:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        with self._lock:
-            try:
-                result = self._model.create_chat_completion(
-                    messages=messages,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    stop=["<|im_end|>", "<|endoftext|>"],
-                )
-                return result["choices"][0]["message"]["content"].strip()
-            except Exception as e:
-                logger.error("推理失败: %s", e)
-                return ""
+        result_event = threading.Event()
+        result_holder = {"output": ""}
+        self._queue.put((messages, result_holder))
+        result_event.wait()
+        return result_holder["output"]
