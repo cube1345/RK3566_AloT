@@ -1,6 +1,6 @@
 # Agent ZX 公共知识库
 
-> 最后更新: 2026-05-03 | 版本: v5.1 | 传感器: SGP30+DHT11+BH1750+HC-SR501 | 测试: 152 passed
+> 最后更新: 2026-05-03 | 版本: v5.2 | 传感器: SGP30+DHT11+BH1750+HC-SR501 | 测试: 152 passed
 
 ## 项目总览
 
@@ -8,32 +8,37 @@
 
 - **团队**: 1 人 (cube + Claude 副驾)
 - **硬件目标**: Raspberry Pi 5 8GB (BCM2712, 4×A76@2.4GHz)
-- **代码量**: ~3500 行 Python, 35 模块 (新增 ai_brain.py, scene_engine.py)
-- **测试**: 151 passed / 157 total, 5个预存smbus2/serial失败(Windows), 1个async跳过 (core 117 + stress 34)
+- **代码量**: ~4300 行 Python, 36 模块 (新增 ai_brain.py, scene_engine.py, profile_engine.py)
+- **测试**: 152 passed / 157 total, 5个预存smbus2/serial失败(Windows) (core 118 + stress 34)
 - **LLM**: Qwen2.5-1.5B-Instruct Q4_K_M GGUF (941MB, 推理 ~10 tok/s)
 - **当前分支**: master
 - **Pi 5 部署**: 进行中 (2026-05-01, Debian Trixie 13/testing, 清华镜像源)
 
-## 架构核心 (v5.1)
+## 架构核心 (v5.2)
 
 ```
 用户指令 → SceneEngine(6场景关键词) → 工具执行 → 自然语言回复
                                         ↓ 未命中
-          → CommandHandler(ReAct/L路由) → 工具执行 → MidPath说明 → Web Dashboard
-传感器 → AIBrain(LLM决策+知识上下文+反问) → 工具执行
+          → 模糊检测(追问) → CommandHandler(CoT:观察→分析→决策) → 工具执行 → Dashboard
+传感器 → AIBrain(LLM决策+知识上下文+反问+主动建议) → 工具执行
        → FastPath(仅紧急安全网: temp>35/CO₂>2000)
        → 异常检测(z-score跳变跳过) → AI反问用户
-       → 偏好学习(用户覆盖→积累偏好,注入LLM)
+       → ProfileEngine(行为追踪+画像构建+规律发现) → 个性化注入LLM
 ```
 
-### 决策架构 (v5.1 升级)
-- **SceneEngine** (NEW): 6预定义场景(sleep/away/home/movie/wakeup/cooking), 关键词触发+时间自动触发
+### 决策架构 (v5.2 升级)
+- **CoT思考链** (NEW): LLM输出结构化为 观察→分析→决策, 推理可追溯
+- **ContextManager** (NEW): 多轮对话记忆, 5分钟超时, 历史压缩注入prompt
+- **模糊指令追问** (NEW): 指代不明/动作不完整/含义模糊 → 返回选项按钮
+- **主动时段建议** (NEW): 早安(6-9)/午餐(11-13)/傍晚(17-19)/晚安(21-23)
+- **用户画像引擎** (NEW): profile_engine.py, 5维度画像+规律自动发现+响应个性化
+- **SceneEngine**: 6预定义场景(sleep/away/home/movie/wakeup/cooking), 关键词触发+时间自动触发
 - **AIBrain知识上下文**: 决策前查询历史同时段对比(same_hour)+日均趋势(hourly_profile)+传感器关联(correlation)
 - **AIBrain主动反问**: 不确定时返回question类型 → Dashboard 5s轮询 → 用户回答 → 执行/忽略
-- **AIBrain**: LLM决策引擎, 每30s评估, 支持3种返回类型(action/question/none)
+- **AIBrain**: LLM决策引擎, 每30s评估, 支持4种返回类型(action/question/proactive_suggestion/none)
 - **FastPath**: 仅紧急安全底线 (temp>35紧急降温, CO₂>2000紧急告警)
 - **MidPath**: AI决策后异步生成自然语言说明
-- **CommandHandler ReAct**: 复杂指令 执行→观察→再决策, 最多2轮
+- **CommandHandler ReAct**: 复杂指令 执行→观察→再决策, 最多3轮, 推理轨迹积累
 - **偏好学习+异常检测**: 用户覆盖记录, z-score跳变跳过
 
 ### 7 大功能
@@ -46,7 +51,7 @@
 7. ⑦ Web Dashboard 总控 (Flask + Chart.js, 12 API)
 
 ### 模块结构
-- `core/`: agent.py (主循环), ai_brain.py (AI决策+知识+反问), scene_engine.py (6场景识别, NEW), command_handler.py (ReAct循环+场景入口), fastpath.py (安全网), midpath.py (AI自然语言), tool_registry.py (工具注册+并行执行)
+- `core/`: agent.py (主循环), ai_brain.py (AI决策+知识+反问+建议), profile_engine.py (画像+规律发现, NEW), scene_engine.py (6场景识别), command_handler.py (CoT+ReAct+追问+ContextManager), fastpath.py (安全网), midpath.py (AI自然语言), tool_registry.py (工具注册+并行执行)
 - `agents/`: environment_agent.py, food_agent.py, life_agent.py (分层System Prompt + TOOLS)
 - `sensors/`: co2.py (MH-Z19B), sgp30.py (SGP30), temp_humid.py (SHT30), dht11.py (DHT11), light.py, motion.py, mock.py
 - `devices/`: fan.py, light.py, ac.py, purifier.py, manager.py, base.py
@@ -72,6 +77,11 @@
 - [x] v5.1: 知识驱动决策 (同时段对比+日均趋势+传感器关联+routines规律)
 - [x] v5.1: Web Dashboard (14 API, 提问UI)
 - [x] v5.1: 全方位高压测试 (34 stress tests, 8类, 全部通过)
+- [x] v5.2: CoT思考链 (观察→分析→决策, ContextManager多轮对话, few-shot示例)
+- [x] v5.2: 模糊指令追问 (4种模糊模式检测, 选项按钮, 多轮合并上下文)
+- [x] v5.2: 主动时段建议 (早安/午餐/傍晚/晚安, 30分钟冷却)
+- [x] v5.2: 用户画像引擎 (ProfileEngine, 5维度, 行为追踪, 规律自动发现)
+- [x] v5.2: Dashboard 画像Tab + 规律管理 + 提问分类图标
 - [x] 项目文档 (方案文档+硬件清单+部署教程+移植文档)
 
 ### 待完成
