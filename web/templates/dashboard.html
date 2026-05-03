@@ -215,8 +215,9 @@ async function updateSensors() {
 
 async function updateDevices() {
   const d = await fetchJSON('/api/devices');
-  document.getElementById('devLight').textContent = d.light?.state || '--';
   document.getElementById('devFan').textContent = d.fan?.state || '--';
+  const light = d.light;
+  document.getElementById('devLight').textContent = light?.state === 'on' ? `开 (${light.brightness})` : (light?.state || '--');
   document.getElementById('devAc').textContent = d.ac?.state || '--';
   document.getElementById('devPurifier').textContent = d.purifier?.state || '--';
 }
@@ -339,6 +340,7 @@ setInterval(pollQuestion, 5000);
 setInterval(updateSensors, 3000);
 setInterval(updateDevices, 5000);
 setInterval(loadEvents, 10000);
+setInterval(loadFoods, 15000);
 setInterval(updateCharts, 30000);
 
 // 首次加载

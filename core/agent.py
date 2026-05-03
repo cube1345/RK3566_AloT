@@ -154,19 +154,27 @@ class AgentOrchestrator:
         # 设备控制
         @registry.register(description="风扇控制 0关-3高速")
         def set_fan(speed: int):
-            return self.devices.control("fan", "set", speed=speed)
+            result = self.devices.control("fan", "set", speed=speed)
+            self.fastpath.set_device_state("fan", ["off", "low", "mid", "high"][max(0, min(3, speed))])
+            return result
 
         @registry.register(description="空调控制 mode=cool/dry/heat")
         def ac_control(mode: str, temp: int = 26, fan_speed: str = "auto"):
-            return self.devices.control("ac", mode, temp=temp, fan_speed=fan_speed)
+            result = self.devices.control("ac", mode, temp=temp, fan_speed=fan_speed)
+            self.fastpath.set_device_state("ac", "on")
+            return result
 
         @registry.register(description="灯光控制 on/off, brightness=0-255")
         def set_light(state: str, brightness: int = 255):
-            return self.devices.control("light", state, brightness=brightness)
+            result = self.devices.control("light", state, brightness=brightness)
+            self.fastpath.set_device_state("light", state)
+            return result
 
         @registry.register(description="空气净化 0关-3强")
         def set_air_purifier(level: int):
-            return self.devices.control("air_purifier", "set", level=level)
+            result = self.devices.control("air_purifier", "set", level=level)
+            self.fastpath.set_device_state("purifier", f"level {level}" if level > 0 else "off")
+            return result
 
         # 食材管理
         @registry.register(description="食材入库: name, expiry_date(Y-m-d), storage")

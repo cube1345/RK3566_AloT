@@ -40,14 +40,20 @@ def api_sensors():
 
 @app.route("/api/devices")
 def api_devices():
-    """设备状态"""
-    from core.fastpath import FastPathEngine
-    states = {
-        "fan": {"state": orchestrator.fastpath.get_device_state("fan", "off")},
-        "light": {"state": orchestrator.fastpath.get_device_state("light", "off")},
-        "ac": {"state": orchestrator.fastpath.get_device_state("ac", "off")},
-        "purifier": {"state": orchestrator.fastpath.get_device_state("purifier", "off")},
-    }
+    """设备状态 — 从实际设备驱动读取, 非fastpath缓存"""
+    dev_status = orchestrator.devices.status_all()
+    states = {}
+    for name, info in dev_status.items():
+        if name == "fan":
+            states["fan"] = {"state": info.get("state", "off")}
+        elif name == "light":
+            states["light"] = {"state": info.get("state", "off"), "brightness": info.get("brightness", 0)}
+        elif name == "ac":
+            power = "on" if info.get("power") else "off"
+            states["ac"] = {"state": f"{info.get('mode', 'cool')} {info.get('temp', 26)}°C {power}"}
+        elif name == "air_purifier":
+            level = info.get("level", 0)
+            states["purifier"] = {"state": f"level {level}" if level > 0 else "off", "level": level}
     return jsonify(states)
 
 
