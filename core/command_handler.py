@@ -2,12 +2,14 @@
 import json
 import logging
 import re
+import time
 
 from agents.environment_agent import SYSTEM_PROMPT as ENV_PROMPT, AGENT_NAME as ENV_NAME
 from agents.food_agent import SYSTEM_PROMPT as FOOD_PROMPT, AGENT_NAME as FOOD_NAME
 from agents.life_agent import SYSTEM_PROMPT as LIFE_PROMPT, AGENT_NAME as LIFE_NAME
 from core.tool_registry import registry
 from core.scene_engine import SceneEngine
+from llm.context import ContextManager
 from config import AI_MAX_REACT_ITER
 
 logger = logging.getLogger("command")
@@ -40,18 +42,77 @@ def route(text: str) -> str:
     return _DEFAULT_AGENT
 
 
+# ===== 模糊指令检测 (v5.2) =====
+_AMBIGUITY_PATTERNS = [
+    (r'(?:把它|把这个|那个|这个)\s*(?:关|开|调|弄|搞)', '您是指灯、风扇还是空调？'),
+    (r'^开一(?:下|哈|个)', '想开哪个设备呢？（灯/风扇/空调/净化器）'),
+    (r'^关一(?:下|哈|个)', '想关哪个设备呢？（灯/风扇/空调/净化器）'),
+    (r'^(?:然后|还有|另外|接着|再|接下来)$', '还需要我做什么呢？'),
+    (r'有点不?舒服', '是温度不合适还是空气质量不好？'),
+    (r'^(?:嗯|哦|好|可以|行|对|是)\s*$', None),  # 不是追问场景，是确认回应
+]
+_AMBIGUITY_OPTIONS = {
+    "灯还是风扇": ["灯", "风扇", "空调", "净化器"],
+    "想开哪个": ["灯", "风扇", "空调", "净化器"],
+    "想关哪个": ["灯", "风扇", "空调", "净化器"],
+    "还需要我做": ["查看天气", "检查食材", "不用了"],
+    "温度不合适": ["温度偏高，降温", "空气质量不好，通风", "都有"],
+}
+
+
+def _detect_ambiguity(text: str) -> dict | None:
+    """检测模糊指令，返回追问dict或None"""
+    t = text.strip()
+    if not t or len(t) > 20:
+        return None
+    for pattern, question in _AMBIGUITY_PATTERNS:
+        if re.search(pattern, t):
+            if question is None:
+                return None
+            # 匹配选项
+            options = ["是", "不用"]
+            for key, opts in _AMBIGUITY_OPTIONS.items():
+                if key in question:
+                    options = opts
+                    break
+            return {"type": "clarification", "text": question, "options": options}
+    return None
+
+
+def _parse_cot_reply(raw: str) -> str:
+    """从CoT输出中提取'分析'字段作为自然语言回复"""
+    for pattern in (r'分析\s*[:：]\s*(.+?)(?:\n|$)', r'分析\s*[:：]\s*(.+?)$'):
+        m = re.search(pattern, raw, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 class CommandHandler:
     def __init__(self, llm=None, db=None, sensors=None):
         self._llm = llm
         self._db = db
         self._sensors = sensors
         self._scene_engine = SceneEngine(llm=llm)
+        self._context = ContextManager()
+        self._pending_clarification: tuple | None = None  # (orig_text, question, agent)
 
     def set_llm(self, llm):
         self._llm = llm
         self._scene_engine._llm = llm
 
     def handle(self, text: str, history: list[dict] | None = None) -> dict:
+        # 对话超时检查
+        self._context.prune_if_stale()
+
+        # 检查是否是对待澄清问题的回答
+        if self._pending_clarification:
+            orig_text, question, agent = self._pending_clarification
+            self._pending_clarification = None
+            combined = f"{orig_text} | 用户补充: {text}"
+            self._context.add_user(combined)
+            return self._process(combined, agent)
+
         # 场景识别: 命中关键词 → 直接执行工具链
         scene = self._scene_engine.recognize(text)
         if scene:
@@ -62,6 +123,13 @@ class CommandHandler:
                 for a in actions:
                     self._db.log_event("tool_exec",
                         f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+                # 行为追踪
+                import datetime
+                now = datetime.datetime.now()
+                self._db.log_behavior("scene_trigger", text[:200], agent="scene",
+                                      hour=now.hour, day=now.weekday())
+            self._context.add_user(text)
+            self._context.add_assistant(scene["reply"], action=scene["name"])
             return {
                 "reply": scene["reply"],
                 "actions": actions,
@@ -69,45 +137,45 @@ class CommandHandler:
                 "llm_used": False,
             }
 
+        # 模糊指令检测 → 追问用户
+        ambiguity = _detect_ambiguity(text)
+        if ambiguity:
+            agent_name = route(text)
+            self._pending_clarification = (text, ambiguity["text"], agent_name)
+            self._context.add_user(text)
+            logger.info("追问: %s → %s", text[:40], ambiguity["text"])
+            return {
+                "reply": f"🤔 {ambiguity['text']}",
+                "actions": [],
+                "agent": agent_name,
+                "llm_used": False,
+                "clarification": ambiguity,
+            }
+
         # 复杂指令走ReAct多步推理
         complex_kw = ("为什么", "怎么样", "检查", "分析", "如何", "怎么回事", "怎么办")
         if len(text) > 15 or any(kw in text for kw in complex_kw):
+            self._context.add_user(text)
             return self._react_loop(text, max_iter=AI_MAX_REACT_ITER)
 
         agent_name = route(text)
-        logger.info("路由: '%s' -> %s", text[:40], agent_name)
+        self._context.add_user(text)
+        return self._process(text, agent_name)
 
+    def _process(self, text: str, agent_name: str) -> dict:
+        """统一处理入口：路由→prompt→LLM→解析→执行"""
+        logger.info("路由: '%s' -> %s", text[:40], agent_name)
         agent_role = _AGENT_MAP[agent_name]
         tool_block = registry.get_prompt_block()
         context = self._build_context()
-
-        system_prompt = (
-            "你是智能家居工具调用器。\n"
-            f"角色: {agent_role}\n\n"
-            "绝对规则:\n"
-            "1. 只输出一个JSON数组，首字符必须是[，末字符必须是]\n"
-            "2. 不得输出任何非JSON文本、解释、说明\n"
-            "3. 不得使用EXPLANATION/TOOLS/行动/反问等标记\n"
-            "4. 不需操作时输出[]\n\n"
-            "示例:\n"
-            '太热了\n'
-            '→ [{"tool":"ac_control","params":{"mode":"cool","temp":26,'
-            '"fan_speed":"auto"}},{"tool":"set_fan","params":{"speed":1}}]\n\n'
-            '买了鸡蛋明天到期\n'
-            '→ [{"tool":"add_food","params":{"name":"鸡蛋",'
-            '"expiry_date":"2026-05-04","quantity":1,"unit":"个",'
-            '"storage":"冷藏"}}]\n\n'
-            '冰箱里有什么\n→ [{"tool":"list_foods","params":{}}]\n\n'
-            '你好\n→ []\n\n'
-            f"可用工具:\n{tool_block}\n\n"
-            "输出:"
-        )
+        system_prompt = self._build_system_prompt(agent_name, agent_role, tool_block)
 
         user_prompt = f"当前环境: {context}\n\n用户指令: {text}"
 
         # LLM 生成
         tool_chain = []
         llm_used = False
+        raw = ""
         if self._llm and self._llm.is_loaded:
             try:
                 raw = self._llm.generate(user_prompt, system=system_prompt)
@@ -120,7 +188,6 @@ class CommandHandler:
         if not isinstance(tool_chain, list):
             tool_chain = []
 
-        # 兜底: LLM 未输出工具链时, 尝试正则提取食材指令
         # 兜底: LLM 未输出工具链时, 尝试正则提取食材指令
         if not tool_chain:
             food_chain = _try_food_regex(text)
@@ -137,7 +204,7 @@ class CommandHandler:
                 logger.warning("tool exec failed: %s", e)
 
         # 构建回复
-        reply = self._build_reply(agent_name, actions, text, llm_used)
+        reply = self._build_reply(agent_name, actions, text, llm_used, raw)
 
         if self._db:
             self._db.log_event("user_command", f"[{agent_name}] {text[:100]}")
@@ -146,7 +213,13 @@ class CommandHandler:
                     "tool_exec",
                     f"{a.get('tool')}: {str(a.get('result', ''))[:80]}",
                 )
+            # 行为追踪
+            import datetime
+            now = datetime.datetime.now()
+            self._db.log_behavior("command", text[:200], agent=agent_name,
+                                  hour=now.hour, day=now.weekday())
 
+        self._context.add_assistant(reply, action=agent_name)
         return {
             "reply": reply,
             "actions": actions,
@@ -154,8 +227,60 @@ class CommandHandler:
             "llm_used": llm_used,
         }
 
-    def _react_loop(self, text: str, max_iter: int = 2) -> dict:
+    def _build_system_prompt(self, agent_name: str, agent_role: str, tool_block: str) -> str:
+        """构建CoT结构化的system prompt"""
+        # 用户画像上下文
+        persona = ""
+        if self._db:
+            try:
+                from core.profile_engine import ProfileEngine
+                pe = ProfileEngine(self._db)
+                persona = pe.get_persona_context()
+            except Exception:
+                pass
+
+        # 对话历史上下文
+        conv_ctx = self._context.build_injectable()
+        conv_block = f"对话历史: {conv_ctx}\n" if conv_ctx else ""
+
+        persona_block = f"{persona}\n" if persona else ""
+
+        return (
+            "你是智能家居AI管家。进行任务时请按以下步骤思考：\n\n"
+            "观察: 理解用户指令和当前环境。\n"
+            "分析: 推理用户真正需要什么操作。\n"
+            "决策: 输出JSON工具链。\n\n"
+            "=== 规则 ===\n"
+            '1. 必须包含「观察/分析/决策」三个步骤\n'
+            "2. 决策部分只输出JSON数组，首字符[末字符]\n"
+            "3. 不确定用户意图时，用 [反问] 格式代替决策\n"
+            "4. 不需操作时决策输出[]\n"
+            "5. 不得输出EXPLANATION/TOOLS/行动等标记\n\n"
+            "=== 示例 ===\n"
+            "用户: 太热了 环境: temperature=32°C, humidity=70%\n"
+            "观察: 用户反馈热，当前32°C湿度70%体感闷热\n"
+            "分析: 应降温除湿，开空调制冷26°C同时风扇辅助\n"
+            "决策: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26,"
+            "\"fan_speed\":\"auto\"}},{\"tool\":\"set_fan\",\"params\":{\"speed\":2}}]\n\n"
+            "用户: 冰箱里有什么\n"
+            "观察: 用户查询冰箱库存\n"
+            "分析: 列出所有食材即可\n"
+            "决策: [{\"tool\":\"list_foods\",\"params\":{}}]\n\n"
+            f"用户: 你好\n"
+            "观察: 用户打招呼\n"
+            "分析: 无需操作，友好回应\n"
+            "决策: []\n\n"
+            f"{conv_block}"
+            f"{persona_block}"
+            f"角色: {agent_role}\n\n"
+            f"可用工具:\n{tool_block}\n\n"
+            "输出:"
+        )
+
+    def _react_loop(self, text: str, max_iter: int = None) -> dict:
         """ReAct循环: LLM行动→观察结果→再决策, 最多max_iter轮"""
+        if max_iter is None:
+            max_iter = AI_MAX_REACT_ITER
         agent_name = route(text)
         agent_role = _AGENT_MAP[agent_name]
         tool_block = registry.get_prompt_block()
@@ -164,24 +289,31 @@ class CommandHandler:
         all_actions = []
         observation = ""
         llm_used = False
+        reasoning_trace = []
 
         for iteration in range(max_iter):
             if iteration == 0:
-                user_prompt = f"当前环境: {context}\n\n用户指令: {text}\n\n需要什么工具？只输出JSON数组。"
+                user_prompt = (
+                    f"当前环境: {context}\n\n"
+                    f"用户指令: {text}\n\n"
+                    f"请按观察→分析→决策的步骤输出。"
+                )
             else:
+                trace_text = "\n".join(reasoning_trace[-3:])
                 user_prompt = (
                     f"当前环境: {context}\n"
                     f"已执行结果: {observation}\n"
-                    f"还需要更多操作吗？不需要输出[]。"
+                    f"之前分析: {trace_text}\n"
+                    f"还需要更多操作吗？不需要输出决策: []。"
                 )
 
             system_prompt = (
                 "你是智能家居工具调用器。\n"
                 f"角色: {agent_role}\n\n"
-                "绝对规则:\n"
-                "1. 只输出一个JSON数组\n"
-                "2. 不得输出任何其他文字\n"
-                "3. 不需操作输出[]\n"
+                "规则:\n"
+                "1. 观察: 理解当前状态\n"
+                "2. 分析: 推理需要什么\n"
+                "3. 决策: 输出JSON数组(不需操作输出[])\n"
                 f"这是第{iteration+1}/{max_iter}步。\n\n"
                 f"可用工具:\n{tool_block}\n\n"
                 "输出:"
@@ -194,6 +326,10 @@ class CommandHandler:
                 raw = self._llm.generate(user_prompt, system=system_prompt)
                 tool_chain = _parse_tool_chain(raw)
                 llm_used = True
+                # 提取分析轨迹
+                cot = _parse_cot_reply(raw)
+                if cot:
+                    reasoning_trace.append(cot)
             except Exception as e:
                 logger.warning("ReAct迭代%d失败: %s", iteration+1, e)
                 break
@@ -218,7 +354,12 @@ class CommandHandler:
             for a in all_actions:
                 self._db.log_event("tool_exec",
                     f"{a.get('tool')}: {str(a.get('result',''))[:80]}")
+            import datetime
+            now = datetime.datetime.now()
+            self._db.log_behavior("command", text[:200], agent=agent_name,
+                                  hour=now.hour, day=now.weekday())
 
+        self._context.add_assistant(reply, action=f"{agent_name}_react")
         return {
             "reply": reply,
             "actions": all_actions,
@@ -246,7 +387,8 @@ class CommandHandler:
         return ", ".join(parts)
 
     def _build_reply(
-        self, agent: str, actions: list[dict], text: str, llm_used: bool
+        self, agent: str, actions: list[dict], text: str, llm_used: bool,
+        llm_raw: str = "",
     ) -> str:
         if actions:
             parts = []
@@ -254,6 +396,12 @@ class CommandHandler:
                 r = a.get("result", "")
                 parts.append(f"{a['tool']}: {r}" if r else a["tool"])
             return "\n".join(parts)
+
+        # 尝试从CoT输出提取分析作为回复
+        if llm_raw:
+            cot_reply = _parse_cot_reply(llm_raw)
+            if cot_reply:
+                return cot_reply
 
         # 无工具调用: 纯 LLM 对话
         if llm_used:
@@ -427,6 +575,16 @@ def _parse_tool_chain(raw: str) -> list[dict]:
         if chain:
             logger.info("Parsed %d tools from function-call syntax", len(chain))
             return _normalize(chain)
+
+    # 格式8: CoT "决策: [...]" 格式 (v5.2)
+    cot_m = re.search(r'决策\s*[:：]\s*(\[[\s\S]*?\])', raw)
+    if cot_m:
+        try:
+            parsed = json.loads(cot_m.group(1))
+            if isinstance(parsed, list):
+                return _normalize(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
 
     logger.warning("LLM non-JSON: %.160s", raw)
     return []

@@ -177,6 +177,38 @@ def api_preference_delete(key):
     return jsonify({"status": "ok"})
 
 
+# ===== 用户画像 (v5.2) =====
+
+@app.route("/api/profile")
+def api_profile():
+    """获取用户画像"""
+    if orchestrator and orchestrator.profile_engine:
+        return jsonify(orchestrator.profile_engine.get_full_profile())
+    return jsonify({"dimensions": {}, "updated_at": 0})
+
+
+@app.route("/api/routines")
+def api_routines():
+    """获取所有规律/日程"""
+    routines = orchestrator.db.list_routines(enabled_only=False)
+    return jsonify(routines)
+
+
+@app.route("/api/routines/detect", methods=["POST"])
+def api_detect_routines():
+    """触发规律自动发现"""
+    if orchestrator and orchestrator.profile_engine:
+        detected = orchestrator.profile_engine.detect_routines()
+        return jsonify({"detected": detected})
+    return jsonify({"detected": []})
+
+
+@app.route("/api/routines/<int:routine_id>", methods=["DELETE"])
+def api_routine_delete(routine_id):
+    orchestrator.db.delete_routine(routine_id)
+    return jsonify({"status": "ok"})
+
+
 # ===== 主动反问 (v5.1) =====
 
 @app.route("/api/pending_question")
@@ -191,17 +223,26 @@ def api_pending_question():
 
 @app.route("/api/answer_question", methods=["POST"])
 def api_answer_question():
-    """用户回复AI反问"""
+    """用户回复AI反问 / 澄清追问 / 主动建议"""
     data = request.json or {}
     answer = data.get("answer", "")
     if not answer or not orchestrator or not orchestrator.ai_brain:
         return jsonify({"status": "ignored"})
 
+    # 追踪行为
+    if orchestrator.db:
+        import datetime
+        now = datetime.datetime.now()
+        orchestrator.db.log_behavior("question_answer", f"Q:{answer[:60]}",
+                                      hour=now.hour, day=now.weekday())
+
     q = orchestrator.ai_brain.get_pending_question()
     if not q:
         return jsonify({"status": "no_question"})
 
-    # 确认则执行pending工具
+    q_type = q.get("type", "")
+
+    # 确认则执行pending工具 (传感器反问 / 主动建议)
     positive = any(kw in answer for kw in ("是", "好", "可以", "行", "yes", "ok", "通风"))
     if positive and q.get("pending_tools"):
         try:
@@ -210,6 +251,12 @@ def api_answer_question():
             return jsonify({"status": "executed", "actions": actions})
         except Exception as e:
             return jsonify({"status": "error", "detail": str(e)})
+
+    # 澄清追问: 将回答重新路由到CommandHandler
+    if q_type == "clarification" and "不用" not in answer:
+        orchestrator.ai_brain.clear_pending_question()
+        result = orchestrator.handle_command(answer)
+        return jsonify({"status": "rerouted", "result": result})
 
     orchestrator.ai_brain.clear_pending_question()
     return jsonify({"status": "dismissed"})

@@ -19,9 +19,15 @@ class AIBrain:
         self._sensors = sensors
         self._recent_decisions: list[dict] = []
         self._pending_question: dict | None = None
+        self._profile_engine = None
+        self._suggestion_cooldown: dict = {}
+        self._suggestion_interval = 1800  # 同类型建议冷却30分钟
 
     def set_llm(self, llm):
         self._llm = llm
+
+    def set_profile_engine(self, pe):
+        self._profile_engine = pe
 
     # ===== P0: AI 决策引擎 =====
 
@@ -39,6 +45,7 @@ class AIBrain:
         recent = self._get_recent_actions_context()
         prefs = self._get_preferences_context()
         knowledge = self._build_knowledge_context(sensor_snapshot)
+        persona = self._get_persona_context()
 
         system_prompt = (
             "你是智能家居AI管家。基于传感器数据决定是否需要操作。\n\n"
@@ -48,7 +55,8 @@ class AIBrain:
             "3. 尊重用户偏好。\n"
             "4. CO₂>1500需通风, 温度>30需降温, 温度<16需升温。\n"
             "5. 有人→舒适优先, 无人→节能优先。\n"
-            "6. 若不确定是否该操作, 反问用户。\n\n"
+            "6. 若不确定是否该操作, 反问用户。\n"
+            "7. 若环境舒适无需操作, 可发送主动建议(如早安/晚安提醒)。\n\n"
             "输出格式(三选一, 严格复制):\n\n"
             "如需行动:\n"
             "[行动] EXPLANATION: <中文原因>\n"
@@ -63,6 +71,7 @@ class AIBrain:
             "可用工具: ac_control(mode,temp,fan_speed), set_fan(speed), "
             "set_light(state,brightness), set_air_purifier(level), "
             "tts(text), notify_display(title,body)\n"
+            f"{persona}\n"
             "只输出上述格式。禁止额外文字。"
         )
 
@@ -88,6 +97,12 @@ class AIBrain:
             return {"type": "none"}
 
         result = self._parse_decision_output(raw)
+
+        # 无操作时尝试主动建议
+        if result.get("type") == "none":
+            suggestion = self._get_proactive_suggestion()
+            if suggestion:
+                result = suggestion
 
         if self._db:
             tool_chain = result.get("tool_chain", [])
@@ -237,6 +252,21 @@ class AIBrain:
         if not prefs:
             return ""
         return "; ".join(f"{k}:{v}" for k, v in prefs.items())
+
+    def _get_persona_context(self) -> str:
+        """获取用户画像注入文本"""
+        if self._profile_engine:
+            ctx = self._profile_engine.get_persona_context()
+            if ctx:
+                return ctx
+        return ""
+
+    def _get_proactive_suggestion(self) -> dict | None:
+        """基于时间返回主动建议"""
+        if self._profile_engine:
+            hour = time.localtime().tm_hour
+            return self._profile_engine.get_proactive_suggestion(hour)
+        return None
 
     def _build_knowledge_context(self, snapshot: dict) -> str:
         """构建知识上下文: 历史同时段对比 + 日均趋势"""

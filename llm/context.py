@@ -1,5 +1,6 @@
 # 上下文管理器 — 多轮对话历史压缩
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,11 +18,15 @@ class ContextManager:
     def __init__(self, max_rounds: int = None):
         self.max_rounds = max_rounds or AGENT["max_history_rounds"]
         self._history: list[Session] = []
+        self._last_interaction: float = 0
+        self._timeout = 300  # 5分钟无交互自动清空
 
     def add_user(self, text: str):
+        self._last_interaction = time.time()
         self._history.append(Session(role="user", content=text))
 
     def add_assistant(self, text: str, action: str = ""):
+        self._last_interaction = time.time()
         self._history.append(Session(role="assistant", content=text, key_action=action))
 
     def add_system(self, text: str):
@@ -57,8 +62,36 @@ class ContextManager:
 
         return messages
 
+    def build_injectable(self) -> str:
+        """返回压缩后的对话摘要，用于注入LLM prompt"""
+        if not self._history:
+            return ""
+        parts = []
+        for s in self._history[-6:]:  # 最近6条
+            role = "用户" if s.role == "user" else "系统" if s.role == "system" else "Agent"
+            text = s.content[:80]
+            parts.append(f"{role}: {text}")
+        return " | ".join(parts) if parts else ""
+
+    def get_last_n_rounds(self, n: int = 3) -> list[dict]:
+        """返回最近N轮对话"""
+        result = []
+        for s in self._history[-n * 2:]:  # user+assistant = 2 per round
+            result.append({"role": s.role, "content": s.content})
+        return result
+
+    def prune_if_stale(self):
+        """超过timeout自动清空"""
+        if self._last_interaction and time.time() - self._last_interaction > self._timeout:
+            self.clear()
+
     def clear(self):
         self._history.clear()
+        self._last_interaction = 0
+
+    @property
+    def is_active(self) -> bool:
+        return bool(self._last_interaction and time.time() - self._last_interaction < self._timeout)
 
     @property
     def history(self) -> list[Session]:

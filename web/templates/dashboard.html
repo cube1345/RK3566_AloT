@@ -80,6 +80,7 @@ input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; 
   <div class="tab" onclick="switchTab('food')">🥘 食材管理</div>
   <div class="tab" onclick="switchTab('events')">📋 事件日志</div>
   <div class="tab" onclick="switchTab('command')">🎯 指令</div>
+  <div class="tab" onclick="switchTab('profile')">👤 用户画像</div>
 </div>
 
 <!-- 环境曲线 -->
@@ -133,9 +134,26 @@ input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; 
       </div>
       <div id="cmdReply" style="margin-top:12px; padding:12px; background:#0f172a; border-radius:8px; min-height:60px;"></div>
       <div id="questionBox" style="margin-top:12px; padding:12px; background:#78350f; border-radius:8px; display:none;">
-        <div style="color:#fcd34d; margin-bottom:8px;">🤔 <span id="questionText"></span></div>
+        <div style="color:#fcd34d; margin-bottom:8px;"><span id="questionIcon">🤔</span> <span id="questionText"></span></div>
         <div id="questionActions"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 用户画像 -->
+<div class="panel" id="panelProfile">
+  <div class="chart-container">
+    <div class="chart-card">
+      <h3>用户画像维度</h3>
+      <div id="profileCards" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-top:8px;"></div>
+    </div>
+    <div class="chart-card">
+      <h3>自动发现规律 <button class="btn btn-sm btn-primary" onclick="detectRoutines()">重新发现</button></h3>
+      <table class="food-table">
+        <thead><tr><th>规律名称</th><th>类型</th><th>可信度</th><th>状态</th></tr></thead>
+        <tbody id="routineTable"></tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -317,6 +335,11 @@ async function pollQuestion() {
     return;
   }
   document.getElementById('questionText').textContent = q.text;
+  const icon = document.getElementById('questionIcon');
+  const qType = q.type || '';
+  if (qType === 'clarification') icon.textContent = '❓';
+  else if (qType === 'proactive_suggestion') icon.textContent = '💡';
+  else icon.textContent = '🤔';
   const actions = document.getElementById('questionActions');
   const opts = q.options || ['是', '不用'];
   actions.innerHTML = opts.map((opt, i) =>
@@ -335,6 +358,63 @@ async function answerQuestion(answer) {
   loadEvents();
 }
 
+// ===== 用户画像 =====
+async function loadProfile() {
+  const p = await fetchJSON('/api/profile');
+  const dims = p.dimensions || {};
+  const cards = document.getElementById('profileCards');
+  if (!Object.keys(dims).length) {
+    cards.innerHTML = '<div style="color:#94a3b8; font-size:13px;">暂无数据，交互越多画像越丰富</div>';
+    return;
+  }
+  const labels = {
+    active_hours: '活跃时段', agent_usage: 'Agent使用', command_length: '指令风格',
+    temp_preference: '温度偏好', scene_frequency: '场景频次'
+  };
+  cards.innerHTML = Object.entries(dims).map(([k, v]) => {
+    let val = '';
+    if (k === 'command_length' && typeof v.value === 'object') {
+      val = `平均${v.value.avg}字，最长${v.value.max}字 (${v.samples}样本)`;
+    } else if (k === 'active_hours' && typeof v.value === 'object') {
+      const top = Object.entries(v.value).sort((a,b) => b[1]-a[1]).slice(0,3).map(e => `${e[0]}时`).join(',');
+      val = top || '未检测到规律';
+    } else if (typeof v.value === 'object') {
+      val = JSON.stringify(v.value).slice(0, 80);
+    } else val = String(v.value);
+    return `<div class="card" style="min-height:auto; padding:12px;">
+      <div class="label">${labels[k]||k}</div>
+      <div style="font-size:13px; margin-top:4px; color:#e2e8f0;">${val}</div>
+      <div style="font-size:10px; color:#64748b;">可信度: ${(v.confidence*100).toFixed(0)}%</div>
+    </div>`;
+  }).join('');
+}
+
+async function loadRoutines() {
+  const routines = await fetchJSON('/api/routines');
+  const tbody = document.getElementById('routineTable');
+  if (!routines.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#94a3b8;">暂无规律，使用一段时间后自动发现</td></tr>';
+    return;
+  }
+  tbody.innerHTML = routines.map(r => {
+    const auto = r.auto_detected ? '🤖自动' : '✋手动';
+    const enabled = r.enabled ? '🟢启用' : '🔴禁用';
+    const conf = (r.confidence*100).toFixed(0);
+    return `<tr><td>${r.name}</td><td>${auto}</td><td>${conf}%</td><td>${enabled}</td></tr>`;
+  }).join('');
+}
+
+async function detectRoutines() {
+  const r = await fetch('/api/routines/detect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({}),
+  });
+  const data = await r.json();
+  loadRoutines();
+  alert(`发现 ${data.detected.length} 个新规律`);
+}
+
 // ===== 定时刷新 =====
 setInterval(pollQuestion, 5000);
 setInterval(updateSensors, 3000);
@@ -342,9 +422,12 @@ setInterval(updateDevices, 5000);
 setInterval(loadEvents, 10000);
 setInterval(loadFoods, 15000);
 setInterval(updateCharts, 30000);
+setInterval(loadProfile, 60000);
+setInterval(loadRoutines, 60000);
 
 // 首次加载
 updateSensors(); updateDevices(); loadEvents(); loadFoods();
+loadProfile(); loadRoutines();
 setTimeout(updateCharts, 1000);
 </script>
 </body>

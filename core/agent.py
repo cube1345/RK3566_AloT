@@ -24,6 +24,7 @@ from knowledge.database import Database
 from tts.speaker import TTSEngine
 from core.ai_brain import AIBrain
 from core.scene_engine import SceneEngine
+from core.profile_engine import ProfileEngine
 
 logger = logging.getLogger("agent")
 
@@ -38,6 +39,7 @@ class AgentOrchestrator:
         self.midpath = MidPathHandler()
         self.ai_brain = AIBrain()
         self.scene_engine = SceneEngine()
+        self.profile_engine = ProfileEngine(db=self.db)
         self._running = False
         self._tasks: list[asyncio.Task] = []
         self._llm_available = False
@@ -64,6 +66,13 @@ class AgentOrchestrator:
 
         # 5. 尝试加载 LLM
         await self._init_llm()
+
+        # 5.2 接入用户画像引擎
+        self.profile_engine._db = self.db
+        self.ai_brain.set_profile_engine(self.profile_engine)
+        # 重建画像（基于已有数据）
+        self.profile_engine.update_profile()
+        logger.info("用户画像引擎已就绪")
 
         # 5.5 接入AI大脑
         if self._llm_available:
@@ -420,8 +429,8 @@ class AgentOrchestrator:
 
                 result = self.ai_brain.evaluate(snapshot)
 
-                if result.get("type") == "question":
-                    logger.info("AI反问: %s", result.get("text"))
+                if result.get("type") in ("question", "proactive_suggestion"):
+                    logger.info("AI%s: %s", "反问" if result.get("type") == "question" else "建议", result.get("text"))
                 elif result.get("type") == "action":
                     tool_chain = result.get("tool_chain", [])
                     explanation = result.get("explanation", "")

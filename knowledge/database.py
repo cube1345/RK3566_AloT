@@ -97,6 +97,32 @@ class Database:
                 enabled INTEGER DEFAULT 1,
                 created_at REAL DEFAULT (strftime('%s','now'))
             )""")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_behaviors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                behavior_type TEXT NOT NULL,
+                detail TEXT,
+                agent TEXT,
+                hour_of_day INTEGER,
+                day_of_week INTEGER,
+                duration_ms REAL DEFAULT 0,
+                timestamp REAL NOT NULL
+            )""")
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_behavior_type ON user_behaviors(behavior_type)
+        """)
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_behavior_hour ON user_behaviors(hour_of_day)
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_profile (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dimension TEXT NOT NULL UNIQUE,
+                vector_json TEXT NOT NULL,
+                confidence REAL DEFAULT 0.3,
+                sample_count INTEGER DEFAULT 0,
+                last_updated REAL NOT NULL
+            )""")
         self.conn.commit()
 
     # ---- 传感器日志 ----
@@ -300,6 +326,132 @@ class Database:
     def delete_routine(self, routine_id: int):
         self.conn.execute("DELETE FROM routines WHERE id=?", (routine_id,))
         self.conn.commit()
+
+    # ---- 用户行为追踪 (v5.2) ----
+    def log_behavior(self, behavior_type: str, detail: str = "", agent: str = "",
+                     hour: int = None, day: int = None, duration_ms: float = 0):
+        self.conn.execute(
+            "INSERT INTO user_behaviors(behavior_type, detail, agent, hour_of_day, day_of_week, duration_ms, timestamp) VALUES (?,?,?,?,?,?,?)",
+            (behavior_type, detail, agent, hour, day, duration_ms, time.time()),
+        )
+        self.conn.commit()
+
+    def get_behavior_stats(self, hours: int = 168) -> dict:
+        """返回最近N小时的行为统计"""
+        cutoff = time.time() - hours * 3600
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM user_behaviors WHERE timestamp>=?", (cutoff,)
+        ).fetchone()[0]
+        if total == 0:
+            return {"total": 0, "by_type": {}, "by_hour": {}, "by_agent": {}}
+        by_type_rows = self.conn.execute(
+            "SELECT behavior_type, COUNT(*) FROM user_behaviors WHERE timestamp>=? GROUP BY behavior_type",
+            (cutoff,),
+        ).fetchall()
+        by_hour_rows = self.conn.execute(
+            "SELECT hour_of_day, COUNT(*) FROM user_behaviors WHERE timestamp>=? AND hour_of_day IS NOT NULL GROUP BY hour_of_day ORDER BY hour_of_day",
+            (cutoff,),
+        ).fetchall()
+        by_agent_rows = self.conn.execute(
+            "SELECT agent, COUNT(*) FROM user_behaviors WHERE timestamp>=? AND agent!='' GROUP BY agent",
+            (cutoff,),
+        ).fetchall()
+        return {
+            "total": total,
+            "by_type": {r[0]: r[1] for r in by_type_rows},
+            "by_hour": {r[0]: r[1] for r in by_hour_rows},
+            "by_agent": {r[0]: r[1] for r in by_agent_rows},
+        }
+
+    def get_behavior_hourly_histogram(self, days: int = 30) -> list[dict]:
+        """按时段统计行为分布"""
+        cutoff = time.time() - days * 86400
+        return self._fetch_dict(
+            "SELECT hour_of_day, COUNT(*) AS count FROM user_behaviors WHERE timestamp>=? AND hour_of_day IS NOT NULL GROUP BY hour_of_day ORDER BY hour_of_day",
+            (cutoff,),
+        )
+
+    def get_recent_commands(self, limit: int = 100) -> list[dict]:
+        return self._fetch_dict(
+            "SELECT * FROM user_behaviors WHERE behavior_type='command' ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        )
+
+    def get_behavior_by_date(self, days: int = 30) -> list[dict]:
+        """按日期+时段统计行为活跃度"""
+        cutoff = time.time() - days * 86400
+        return self._fetch_dict(
+            "SELECT date(datetime(timestamp, 'unixepoch')) AS dt, hour_of_day, COUNT(*) AS cnt FROM user_behaviors WHERE timestamp>=? AND hour_of_day IS NOT NULL GROUP BY dt, hour_of_day ORDER BY dt, hour_of_day",
+            (cutoff,),
+        )
+
+    # ---- 用户画像 (v5.2) ----
+    def save_profile_dimension(self, dimension: str, vector_json: str,
+                                confidence_delta: float = 0.1):
+        cur = self.conn.execute(
+            "SELECT confidence, sample_count FROM user_profile WHERE dimension=?", (dimension,)
+        )
+        row = cur.fetchone()
+        if row:
+            new_conf = min(1.0, row[0] + confidence_delta)
+            self.conn.execute(
+                "UPDATE user_profile SET vector_json=?, confidence=?, sample_count=sample_count+1, last_updated=? WHERE dimension=?",
+                (vector_json, new_conf, time.time(), dimension),
+            )
+        else:
+            initial = min(1.0, 0.3 + confidence_delta)
+            self.conn.execute(
+                "INSERT INTO user_profile(dimension, vector_json, confidence, sample_count, last_updated) VALUES (?,?,?,1,?)",
+                (dimension, vector_json, initial, time.time()),
+            )
+        self.conn.commit()
+
+    def get_profile(self, dimensions: list[str] = None) -> dict:
+        """获取指定(或全部)画像维度, 返回 {dimension: parsed_vector}"""
+        import json
+        if dimensions:
+            placeholders = ",".join("?" * len(dimensions))
+            rows = self.conn.execute(
+                f"SELECT dimension, vector_json, confidence, sample_count FROM user_profile WHERE dimension IN ({placeholders})",
+                dimensions,
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT dimension, vector_json, confidence, sample_count FROM user_profile"
+            ).fetchall()
+        result = {}
+        for r in rows:
+            try:
+                result[r[0]] = {"value": json.loads(r[1]), "confidence": r[2], "samples": r[3]}
+            except (json.JSONDecodeError, TypeError):
+                result[r[0]] = {"value": r[1], "confidence": r[2], "samples": r[3]}
+        return result
+
+    def get_full_profile(self) -> dict:
+        """仪表盘用的完整画像"""
+        profile = self.get_profile()
+        return {
+            "dimensions": profile,
+            "updated_at": time.time(),
+        }
+
+    # ---- 规律自动发现 (v5.2) ----
+    def detect_routines_sql(self, min_occurrences: int = 3, min_days: int = 2) -> list[dict]:
+        """基于SQL聚合发现重复行为模式"""
+        results = self.conn.execute(
+            """SELECT behavior_type, agent, hour_of_day, COUNT(*) AS total,
+                      COUNT(DISTINCT date(datetime(timestamp, 'unixepoch'))) AS day_count
+               FROM user_behaviors WHERE hour_of_day IS NOT NULL
+               GROUP BY behavior_type, agent, hour_of_day
+               HAVING total >= ? AND day_count >= ?
+               ORDER BY total DESC""",
+            (min_occurrences, min_days),
+        ).fetchall()
+        return [
+            {"behavior_type": r[0], "agent": r[1], "hour": r[2],
+             "total": r[3], "day_count": r[4]}
+            for r in results
+        ]
 
     def close(self):
         self.conn.close()
