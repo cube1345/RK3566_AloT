@@ -1,6 +1,6 @@
 # Agent ZX 公共知识库
 
-> 最后更新: 2026-05-01 | 版本: v5.1 | 传感器: SGP30+DHT11+BH1750+HC-SR501 | 测试: 151 passed
+> 最后更新: 2026-05-03 | 版本: v5.1 | 传感器: SGP30+DHT11+BH1750+HC-SR501 | 测试: 152 passed
 
 ## 项目总览
 
@@ -76,20 +76,23 @@
 
 ### 待完成
 - [ ] 传感器接线 (硬件未到)
-- [ ] Pi 5 部署 (进行中, 见下方进度)
-  - [x] 烧录系统 (Raspberry Pi OS Lite 64-bit, 干净重刷)
-  - [x] 基础包 (apt install git/python3-pip/venv/i2c-tools/gpiod, 一条命令)
-  - [x] 启用 I2C (/dev/i2c-1 就绪)
-  - [x] 上传代码 (GitHub git clone 成功)
-  - [x] 创建 venv + Python 依赖 (pip 一次性装完)
-  - [x] 核心测试通过 (115 passed, 0 failed, 0.68s)
-  - [x] 编译 llama.cpp (git clone --depth 1 成功, cmake -B build)
-  - [ ] llama.cpp CMake 编译 (make -j4 → cmake --build build -j4, 进行中)
-  - [ ] 安装 llama-cpp-python (pip install)
-  - [ ] 下载 LLM 模型 (hf download, 941MB, 下载中)
-  - [ ] 配置 .env
-  - [ ] 跑测试
-  - [ ] 启动 main.py + Dashboard 验证
+- [ ] Pi 5 部署 (LLM segfault 修复中)
+  - [x] 烧录系统 (Raspberry Pi OS Lite 64-bit)
+  - [x] 基础包 + I2C 启用
+  - [x] 上传代码 (GitHub)
+  - [x] venv + Python 依赖
+  - [x] 核心测试 (115/115, 0.68s)
+  - [x] llama.cpp 编译 (cmake -B build + cmake --build -j4)
+  - [x] llama-cpp-python 0.3.22 安装
+  - [x] 模型下载 (Qwen2.5-1.5B-Instruct.Q4_K_M.gguf, 941MB, Windows下载→SCP)
+  - [x] .env 配置 (AGENT_MOCK=1, AGENT_GPIO=1, AGENT_PLATFORM=pi5)
+  - [x] main.py 启动 + Dashboard 访问 (http://192.168.101.173:5000)
+  - [x] gpiod v2 API 修复 (6文件: Direction/Value → gpiod.line)
+  - [x] LlamaCppBackend 线程安全 (专用工作线程, 防 segfault)
+  - [x] LLM prompt 优化 (JSON格式强化, function-call解析)
+  - [x] 入口函数规范 (main.run())
+  - [ ] LLM 稳定性验证 (崩溃后需拉取最新代码重试)
+- [ ] 硬件采购 (继电器模块+LED+杜邦线, ~¥20)
 - [ ] PDF方案文档排版
 - [ ] 演示视频录制 (≤3min)
 
