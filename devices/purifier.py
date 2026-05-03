@@ -1,4 +1,4 @@
-# 空气净化设备驱动 — GPIO 继电器 (模拟: 风扇+香薰片)
+# 空气净化设备驱动 — GPIO 继电器
 import logging
 
 from devices.base import BaseDevice
@@ -8,6 +8,16 @@ try:
     import gpiod
     _HAS_GPIO = True
     _GPIOD_V2 = hasattr(gpiod, "LineSettings")
+    if _GPIOD_V2:
+        from gpiod.line import Direction, Value
+    else:
+        Direction = None
+        from enum import IntEnum
+
+        class _Value(IntEnum):
+            ACTIVE = 1
+            INACTIVE = 0
+        Value = _Value
 except ImportError:
     _HAS_GPIO = False
     _GPIOD_V2 = False
@@ -33,8 +43,8 @@ class AirPurifierDevice(BaseDevice):
                 self._req = chip.request_lines(
                     consumer="purifier",
                     config={self._pin: gpiod.LineSettings(
-                        direction=gpiod.Direction.OUTPUT,
-                        output_value=gpiod.Value.INACTIVE,
+                        direction=Direction.OUTPUT,
+                        output_value=Value.INACTIVE,
                     )},
                 )
                 logger.info("净化 GPIO (v2): %s pin %d", GPIO_CHIP, self._pin)
@@ -58,15 +68,13 @@ class AirPurifierDevice(BaseDevice):
     def _apply(self):
         on = self._level > 0
         if RELAY_ACTIVE_LOW:
-            gpio_on, gpio_off = gpiod.Value.INACTIVE, gpiod.Value.ACTIVE
-            raw_on, raw_off = 0, 1
+            on_val, off_val = Value.INACTIVE, Value.ACTIVE
         else:
-            gpio_on, gpio_off = gpiod.Value.ACTIVE, gpiod.Value.INACTIVE
-            raw_on, raw_off = 1, 0
+            on_val, off_val = Value.ACTIVE, Value.INACTIVE
         if self._req:
-            self._req.set_value(self._pin, gpio_on if on else gpio_off)
+            self._req.set_value(self._pin, on_val if on else off_val)
         elif self._line:
-            self._line.set_value(raw_on if on else raw_off)
+            self._line.set_value(on_val.value if on else off_val.value)
 
     def status(self) -> dict:
         return {"name": "air_purifier", "level": self._level}

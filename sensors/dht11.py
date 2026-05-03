@@ -21,6 +21,8 @@ try:
     import gpiod
     _HAS_GPIOD = True
     _GPIOD_V2 = hasattr(gpiod, "LineSettings")
+    if _GPIOD_V2:
+        from gpiod.line import Direction, Value
 except ImportError:
     _HAS_GPIOD = False
     _GPIOD_V2 = False
@@ -72,18 +74,18 @@ class DHT11Sensor(BaseSensor):
             # === Phase 1: Output — 发送起始信号 ===
             out_cfg = {
                 self._pin: gpiod.LineSettings(
-                    direction=gpiod.Direction.OUTPUT,
-                    output_value=gpiod.Value.ACTIVE,
+                    direction=Direction.OUTPUT,
+                    output_value=Value.ACTIVE,
                 )
             }
             out_req = chip.request_lines(consumer="dht11_out", config=out_cfg)
 
             # LOW 20ms (DHT11 要求 >18ms)
-            out_req.set_value(self._pin, gpiod.Value.INACTIVE)
+            out_req.set_value(self._pin, Value.INACTIVE)
             time.sleep(0.020)
 
             # HIGH 30µs
-            out_req.set_value(self._pin, gpiod.Value.ACTIVE)
+            out_req.set_value(self._pin, Value.ACTIVE)
             self._busy_wait_ns(30000)
 
             # 释放输出线
@@ -91,21 +93,21 @@ class DHT11Sensor(BaseSensor):
 
             # === Phase 2: Input — 读取 DHT11 响应和数据 ===
             in_cfg = {
-                self._pin: gpiod.LineSettings(direction=gpiod.Direction.INPUT)
+                self._pin: gpiod.LineSettings(direction=Direction.INPUT)
             }
             in_req = chip.request_lines(consumer="dht11_in", config=in_cfg)
 
             # 等待 DHT11 拉低 (响应起始)
             timeout_ns = 2000000  # 2ms
-            if not self._wait_for(in_req, gpiod.Value.INACTIVE, timeout_ns):
+            if not self._wait_for(in_req, Value.INACTIVE, timeout_ns):
                 logger.warning("DHT11 无响应 (超时等待 LOW)")
                 return None, None
 
-            if not self._wait_for(in_req, gpiod.Value.ACTIVE, timeout_ns):
+            if not self._wait_for(in_req, Value.ACTIVE, timeout_ns):
                 logger.warning("DHT11 响应中断 (超时等待 HIGH)")
                 return None, None
 
-            if not self._wait_for(in_req, gpiod.Value.INACTIVE, timeout_ns):
+            if not self._wait_for(in_req, Value.INACTIVE, timeout_ns):
                 logger.warning("DHT11 响应中断 (超时等待 LOW 2)")
                 return None, None
 
@@ -113,12 +115,12 @@ class DHT11Sensor(BaseSensor):
             bits = []
             for i in range(_BITS):
                 # 等待 HIGH (bit 起始)
-                if not self._wait_for(in_req, gpiod.Value.ACTIVE, 500000):
+                if not self._wait_for(in_req, Value.ACTIVE, 500000):
                     logger.warning("DHT11 bit %d 超时", i)
                     return None, None
                 # 测量 HIGH 脉冲宽度
                 start = time.perf_counter_ns()
-                while in_req.get_value(self._pin) == gpiod.Value.ACTIVE:
+                while in_req.get_value(self._pin) == Value.ACTIVE:
                     if time.perf_counter_ns() - start > 200000:
                         break
                 duration = time.perf_counter_ns() - start

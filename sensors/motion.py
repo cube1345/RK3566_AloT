@@ -12,8 +12,9 @@ try:
     import gpiod
 
     _HAS_GPIOD = True
-    # gpiod v2 API 检测
-    _GPIOD_V2 = hasattr(gpiod, "request_lines")
+    _GPIOD_V2 = hasattr(gpiod, "LineSettings")
+    if _GPIOD_V2:
+        from gpiod.line import Direction
 except ImportError:
     _HAS_GPIOD = False
     _GPIOD_V2 = False
@@ -84,7 +85,7 @@ class MotionSensor(BaseSensor):
             chip = gpiod.Chip(self._gpio_chip)
             self._request = chip.request_lines(
                 consumer="motion_sensor",
-                config={self._pin: gpiod.LineSettings(direction=gpiod.Direction.INPUT)},
+                config={self._pin: gpiod.LineSettings(direction=Direction.INPUT)},
             )
             logger.info("Motion GPIO (gpiod v2): %s pin %d", self._gpio_chip, self._pin)
         except Exception as e:

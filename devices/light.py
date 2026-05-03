@@ -8,6 +8,16 @@ try:
     import gpiod
     _HAS_GPIO = True
     _GPIOD_V2 = hasattr(gpiod, "LineSettings")
+    if _GPIOD_V2:
+        from gpiod.line import Direction, Value
+    else:
+        Direction = None
+        from enum import IntEnum
+
+        class _Value(IntEnum):
+            ACTIVE = 1
+            INACTIVE = 0
+        Value = _Value
 except ImportError:
     _HAS_GPIO = False
     _GPIOD_V2 = False
@@ -34,8 +44,8 @@ class LightDevice(BaseDevice):
                 self._req = chip.request_lines(
                     consumer="light",
                     config={self._pin: gpiod.LineSettings(
-                        direction=gpiod.Direction.OUTPUT,
-                        output_value=gpiod.Value.INACTIVE,
+                        direction=Direction.OUTPUT,
+                        output_value=Value.INACTIVE,
                     )},
                 )
                 logger.info("灯光 GPIO (v2): %s pin %d", GPIO_CHIP, self._pin)
@@ -59,15 +69,13 @@ class LightDevice(BaseDevice):
     def _apply(self):
         on = self._state == "on"
         if RELAY_ACTIVE_LOW:
-            gpio_on, gpio_off = gpiod.Value.INACTIVE, gpiod.Value.ACTIVE
-            raw_on, raw_off = 0, 1
+            on_val, off_val = Value.INACTIVE, Value.ACTIVE
         else:
-            gpio_on, gpio_off = gpiod.Value.ACTIVE, gpiod.Value.INACTIVE
-            raw_on, raw_off = 1, 0
+            on_val, off_val = Value.ACTIVE, Value.INACTIVE
         if self._req:
-            self._req.set_value(self._pin, gpio_on if on else gpio_off)
+            self._req.set_value(self._pin, on_val if on else off_val)
         elif self._line:
-            self._line.set_value(raw_on if on else raw_off)
+            self._line.set_value(on_val.value if on else off_val.value)
 
     def status(self) -> dict:
         return {"name": "light", "state": self._state, "brightness": self._brightness}
