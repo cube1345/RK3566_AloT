@@ -82,23 +82,25 @@ class CommandHandler:
         context = self._build_context()
 
         system_prompt = (
-            "你是一个智能家居工具调用器。\n"
+            "你是智能家居工具调用器。\n"
             f"角色: {agent_role}\n\n"
-            "## 规则\n"
-            "只输出 JSON 数组，不要输出任何其他文字。\n"
-            "每个需要做的事都必须通过调用工具完成。\n\n"
-            "### 示例\n"
-            '太热了 -> [{"tool": "ac_control", "params": {"mode": "cool", "temp": 26, '
-            '"fan_speed": "auto"}}, {"tool": "set_fan", "params": {"speed": 1}}]\n\n'
-            '买了鸡蛋明天到期 -> [{"tool": "add_food", "params": {"name": "鸡蛋", '
-            '"expiry_date": "2026-04-30", "quantity": 1, "unit": "个", '
-            '"storage": "冷藏"}}]\n\n'
-            '冰箱里有什么 -> [{"tool": "list_foods", "params": {}}]\n\n'
-            '今天穿什么 -> [{"tool": "get_weather", "params": {}}]\n\n'
-            '你好 -> []\n\n'
-            "### 可用工具\n"
-            f"{tool_block}\n\n"
-            "只输出 JSON。"
+            "绝对规则:\n"
+            "1. 只输出一个JSON数组，首字符必须是[，末字符必须是]\n"
+            "2. 不得输出任何非JSON文本、解释、说明\n"
+            "3. 不得使用EXPLANATION/TOOLS/行动/反问等标记\n"
+            "4. 不需操作时输出[]\n\n"
+            "示例:\n"
+            '太热了\n'
+            '→ [{"tool":"ac_control","params":{"mode":"cool","temp":26,'
+            '"fan_speed":"auto"}},{"tool":"set_fan","params":{"speed":1}}]\n\n'
+            '买了鸡蛋明天到期\n'
+            '→ [{"tool":"add_food","params":{"name":"鸡蛋",'
+            '"expiry_date":"2026-05-04","quantity":1,"unit":"个",'
+            '"storage":"冷藏"}}]\n\n'
+            '冰箱里有什么\n→ [{"tool":"list_foods","params":{}}]\n\n'
+            '你好\n→ []\n\n'
+            f"可用工具:\n{tool_block}\n\n"
+            "输出:"
         )
 
         user_prompt = f"当前环境: {context}\n\n用户指令: {text}"
@@ -176,10 +178,13 @@ class CommandHandler:
             system_prompt = (
                 "你是智能家居工具调用器。\n"
                 f"角色: {agent_role}\n\n"
-                "规则: 只输出JSON数组。没有文字。不需要就[]。\n"
+                "绝对规则:\n"
+                "1. 只输出一个JSON数组\n"
+                "2. 不得输出任何其他文字\n"
+                "3. 不需操作输出[]\n"
                 f"这是第{iteration+1}/{max_iter}步。\n\n"
-                f"### 可用工具\n{tool_block}\n\n"
-                "只输出JSON。"
+                f"可用工具:\n{tool_block}\n\n"
+                "输出:"
             )
 
             if not self._llm or not self._llm.is_loaded:
@@ -382,6 +387,46 @@ def _parse_tool_chain(raw: str) -> list[dict]:
                         except (json.JSONDecodeError, TypeError):
                             pass
                         break
+
+    # 格式6: AIBrain 格式泄漏 "TOOLS: [...]" / "TOOLS: [{...}]"
+    tools_m = re.search(r'TOOLS:\s*(\[[\s\S]*?\])', raw, re.IGNORECASE)
+    if tools_m:
+        try:
+            parsed = json.loads(tools_m.group(1))
+            if isinstance(parsed, list):
+                return _normalize(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    # 格式7: 函数调用风格 "tool_name(p1, v1), tool2(p2)" → 转工具链
+    # 例: "set_air_purifier(level=2), notify_display(title,body)"
+    func_matches = re.findall(
+        r'(\w+)\(([^)]*)\)', raw
+    )
+    if func_matches:
+        chain = []
+        for tool_name, args_str in func_matches:
+            params = {}
+            if args_str.strip():
+                for part in args_str.split(","):
+                    part = part.strip()
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        v = v.strip().strip('"').strip("'")
+                        try:
+                            v = int(v)
+                        except ValueError:
+                            try:
+                                v = float(v)
+                            except ValueError:
+                                pass
+                        params[k.strip()] = v
+                    else:
+                        params["value"] = part.strip().strip('"').strip("'")
+            chain.append({"tool": tool_name, "params": params})
+        if chain:
+            logger.info("Parsed %d tools from function-call syntax", len(chain))
+            return _normalize(chain)
 
     logger.warning("LLM non-JSON: %.160s", raw)
     return []
