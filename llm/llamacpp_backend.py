@@ -37,11 +37,12 @@ class LlamaCppBackend:
     def _worker_loop(self):
         while True:
             try:
-                messages, result_event = self._queue.get()
-                if messages is None:  # 停止信号
+                item = self._queue.get()
+                if item is None:  # 停止信号
                     break
+                messages, result_holder, result_event = item
                 output = self._do_generate(messages)
-                result_event["output"] = output
+                result_holder["output"] = output
                 result_event.set()
             except Exception as e:
                 logger.error("Worker LLM异常: %s", e)
@@ -72,6 +73,6 @@ class LlamaCppBackend:
 
         result_event = threading.Event()
         result_holder = {"output": ""}
-        self._queue.put((messages, result_holder))
+        self._queue.put((messages, result_holder, result_event))
         result_event.wait()
         return result_holder["output"]
