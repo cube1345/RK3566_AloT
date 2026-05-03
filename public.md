@@ -77,16 +77,16 @@
 ### 待完成
 - [ ] 传感器接线 (硬件未到)
 - [ ] Pi 5 部署 (进行中, 见下方进度)
-  - [x] 烧录系统 (Debian Trixie, SSH 就绪)
-  - [x] 切换清华镜像源 (删除了默认 debian.sources, 多次修复 dpkg 缓存/status)
-  - [x] 安装基础包 (git, python3-pip, python3-venv, i2c-tools, gpiod)
+  - [x] 烧录系统 (Raspberry Pi OS Lite 64-bit, 干净重刷)
+  - [x] 基础包 (apt install git/python3-pip/venv/i2c-tools/gpiod, 一条命令)
   - [x] 启用 I2C (/dev/i2c-1 就绪)
   - [x] 上传代码 (GitHub git clone 成功)
-  - [x] 创建 venv (--without-pip + get-pip.py 解决 Debian venv 缺 pip)
-  - [x] 安装 Python 依赖 (flask, pyserial, smbus2, gpiod, pytest, requests 全部 OK)
-  - [x] 核心测试通过 (115 passed, 0 failed, 0.69s)
-  - [ ] 编译 llama.cpp (网络问题, 从以太网切 WiFi 后重试 clone)
-  - [ ] 下载 LLM 模型 (941MB GGUF)
+  - [x] 创建 venv + Python 依赖 (pip 一次性装完)
+  - [x] 核心测试通过 (115 passed, 0 failed, 0.68s)
+  - [x] 编译 llama.cpp (git clone --depth 1 成功, cmake -B build)
+  - [ ] llama.cpp CMake 编译 (make -j4 → cmake --build build -j4, 进行中)
+  - [ ] 安装 llama-cpp-python (pip install)
+  - [ ] 下载 LLM 模型 (hf download, 941MB, 下载中)
   - [ ] 配置 .env
   - [ ] 跑测试
   - [ ] 启动 main.py + Dashboard 验证
