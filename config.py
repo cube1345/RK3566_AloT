@@ -2,8 +2,20 @@
 import os
 from pathlib import Path
 
-
 ROOT = Path(__file__).parent
+
+# 加载 .env 文件 (存在于 ROOT 目录时自动读取)
+_ENV_FILE = ROOT / ".env"
+if _ENV_FILE.is_file():
+    for _line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if not _line or _line.startswith("#") or "=" not in _line:
+            continue
+        _key, _, _val = _line.partition("=")
+        _key = _key.strip()
+        _val = _val.strip().strip('"').strip("'")
+        if _key and _key not in os.environ:  # 系统环境变量优先
+            os.environ[_key] = _val
 
 # ===== 运行模式 =====
 MOCK_SENSORS = os.getenv("AGENT_MOCK", "1") == "1"  # 开发用 mock, 部署改 0
