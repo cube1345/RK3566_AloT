@@ -8,3 +8,4 @@ models/
 .claude/
 .venv/
 agent_zx.log
+image.png

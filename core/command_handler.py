@@ -22,7 +22,7 @@ _ROUTE_RULES = [
     (["买", "鸡蛋", "牛奶", "肉", "菜", "食材", "冰箱", "过期",
       "到期", "保质期", "菜谱", "做菜", "吃", "番茄", "水果",
       "厨", "调味"], FOOD_NAME),
-    (["穿", "天气", "建议", "今天", "明天", "周末",
+    (["穿", "天气", "建议", "今天", "明天", "周末", "几号", "几点", "日期", "时间",
       "提醒", "贴士", "小贴士", "日报", "总结", "报告",
       "一般", "随便", "看看"], LIFE_NAME),
 ]
@@ -85,6 +85,31 @@ def _parse_cot_reply(raw: str) -> str:
         m = re.search(pattern, raw, re.MULTILINE)
         if m:
             return m.group(1).strip()
+    return ""
+
+
+def _is_meta_cot(text: str) -> bool:
+    """判断CoT分析是否为元描述(需要获取数据)而非最终答案"""
+    meta_patterns = [
+        r'^需(?:要)?获取', r'^需(?:要)?查询', r'^调用', r'^查(?:询|看)',
+        r'^获取', r'^先获取', r'^先查询',
+    ]
+    return any(re.search(p, text) for p in meta_patterns)
+
+
+def _format_action_results(actions: list[dict]) -> str:
+    """将工具执行结果格式化为自然语言"""
+    if not actions:
+        return ""
+    for a in actions:
+        result = a.get("result", "")
+        tool = a.get("tool", "")
+        # 格式化日期时间
+        if tool == "get_date_time" and isinstance(result, dict):
+            return f"今天是{result.get('date', '?')} {result.get('weekday', '')}，{result.get('time', '?')[:5]}"
+        # 格式化天气
+        if tool == "get_weather" and isinstance(result, dict):
+            return f"室外{result.get('condition', '?')}，温度{result.get('temp', '?')}°C，湿度{result.get('humidity', '?')}%"
     return ""
 
 
@@ -400,10 +425,15 @@ class CommandHandler:
         self, agent: str, actions: list[dict], text: str, llm_used: bool,
         llm_raw: str = "",
     ) -> str:
-        # 优先从CoT输出提取"分析"作为自然语言回复
+        # 格式化工具结果 (优先处理信息查询类工具)
+        formatted = _format_action_results(actions)
+        if formatted:
+            return formatted
+
+        # CoT分析作为自然语言回复 (信息查询类结果已在上面处理)
         if llm_raw:
             cot_reply = _parse_cot_reply(llm_raw)
-            if cot_reply:
+            if cot_reply and not _is_meta_cot(cot_reply):
                 return cot_reply
 
         if actions:
@@ -412,6 +442,12 @@ class CommandHandler:
                 r = a.get("result", "")
                 parts.append(f"{a['tool']}: {r}" if r else a["tool"])
             return "\n".join(parts)
+
+        # CoT分析即使"meta"也算回复
+        if llm_raw:
+            cot_reply = _parse_cot_reply(llm_raw)
+            if cot_reply:
+                return cot_reply
 
         # 无工具调用: 纯 LLM 对话
         if llm_used:

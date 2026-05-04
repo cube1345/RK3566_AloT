@@ -246,6 +246,19 @@ class AgentOrchestrator:
         def notify_display(title: str, body: str = ""):
             logger.info("通知: %s - %s", title, body)
 
+        # 日期时间
+        @registry.register(description="获取当前日期和时间")
+        def get_date_time() -> dict:
+            import datetime
+            now = datetime.datetime.now()
+            weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            return {
+                "date": now.strftime("%Y-%m-%d"),
+                "time": now.strftime("%H:%M:%S"),
+                "weekday": weekdays[now.weekday()],
+                "timestamp": now.isoformat(),
+            }
+
         # 天气 (mock)
         @registry.register(description="获取天气 {temp, humidity, condition}")
         def get_weather() -> dict:
