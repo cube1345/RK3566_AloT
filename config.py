@@ -15,6 +15,7 @@ SENSOR_INTERVAL = {
     "temperature": 5, # 温湿度轮询间隔
     "light": 3,       # 光照轮询间隔
     "motion": 1,      # 人体红外轮询间隔
+    "k210": 0.5,      # K210 摄像头轮询间隔(秒), 高频以实时捕获事件
 }
 
 # ===== 传感器型号选择 (MOCK_SENSORS=0 时生效) =====
@@ -109,6 +110,18 @@ else:
     _DEFAULT_UART = "/dev/ttyS0"
 UART_DEV = os.getenv("AGENT_UART", _DEFAULT_UART)
 UART_BAUD = 9600
+
+# ===== UART (K210 摄像头) =====
+# Pi 5:  /dev/ttyAMA1 (独立于 CO₂ 的 /dev/ttyAMA0)
+# RK3566: /dev/ttyS3
+if PLATFORM == "pi5":
+    _DEFAULT_K210_UART = "/dev/ttyAMA1"
+elif PLATFORM == "rk3566":
+    _DEFAULT_K210_UART = "/dev/ttyS3"
+else:
+    _DEFAULT_K210_UART = "/dev/ttyS1"
+K210_UART = os.getenv("AGENT_K210_UART", _DEFAULT_K210_UART)
+K210_BAUD = int(os.getenv("AGENT_K210_BAUD", "115200"))
 
 # ===== LLM =====
 LLM_MODEL = os.getenv("AGENT_LLM", str(ROOT / "models/Qwen2.5-1.5B-Instruct.Q4_K_M.gguf"))

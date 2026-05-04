@@ -219,6 +219,15 @@ class ProfileEngine:
                 return base_reply[:80] + "…"
         return base_reply
 
+    # ===== 完整画像 (API) =====
+
+    def get_full_profile(self) -> dict:
+        if not self._db:
+            return {"dimensions": {}, "updated_at": 0}
+        if not self._persona_cache or self.is_stale():
+            self._persona_cache = self._db.get_profile()
+        return {"dimensions": self._persona_cache, "updated_at": self._last_update}
+
     # ===== 画像时效 =====
 
     def is_stale(self, max_age: int = 3600) -> bool:

@@ -7,8 +7,9 @@ from pathlib import Path
 
 from config import (
     SENSOR_INTERVAL, AGENT, MOCK_SENSORS, LLM_MODEL, WEB_HOST, WEB_PORT,
-    I2C_BUS, UART_DEV, SENSOR_CO2, SENSOR_TEMP, GPIO,
+    I2C_BUS, UART_DEV, SENSOR_CO2, SENSOR_TEMP, GPIO, GPIO_CHIP,
     AI_EVAL_INTERVAL, AI_ANOMALY_THRESHOLD,
+    K210_UART, K210_BAUD,
 )
 from core.fastpath import FastPathEngine, setup_rules
 from core.tool_registry import registry
@@ -156,6 +157,11 @@ class AgentOrchestrator:
         def read_light() -> float:
             return self.sensors.read("light").value
 
+        @registry.register(description="读取K210摄像头状态: 人物/手势/人脸数/条码")
+        def read_k210() -> dict:
+            r = self.sensors.read("k210")
+            return r.raw
+
         @registry.register()
         def read_person_present() -> bool:
             return self.sensors.read("motion").value > 0.5
@@ -259,11 +265,13 @@ class AgentOrchestrator:
     def _init_sensors(self):
         if MOCK_SENSORS:
             from sensors.mock import MockCO2, MockTempHumid, MockLight, MockMotion
+            from sensors.k210 import MockK210Sensor
             self.sensors.register(MockCO2())
             self.sensors.register(MockTempHumid())
             self.sensors.register(MockLight())
             self.sensors.register(MockMotion())
-            logger.info("使用 MOCK 传感器")
+            self.sensors.register(MockK210Sensor())
+            logger.info("使用 MOCK 传感器 (含 K210)")
         else:
             from sensors.light import LightSensor
             from sensors.motion import MotionSensor
@@ -291,6 +299,11 @@ class AgentOrchestrator:
             self.sensors.register(LightSensor(bus=I2C_BUS))
             self.sensors.register(MotionSensor())
             logger.info("光照: BH1750, 人体: HC-SR501")
+
+            # K210 摄像头 (UART)
+            from sensors.k210 import K210Sensor
+            self.sensors.register(K210Sensor(device=K210_UART, baud=K210_BAUD))
+            logger.info("K210 摄像头: %s @ %d", K210_UART, K210_BAUD)
 
     def _register_devices(self):
         self.devices.register(FanDevice())
@@ -361,17 +374,201 @@ class AgentOrchestrator:
             await asyncio.sleep(interval)
 
     async def _doorbell_listener(self):
-        """模拟外卖按键"""
+        """门铃按键监听: GPIO 下降沿触发 → TTS播报 + 事件记录"""
+        pin = GPIO.get("doorbell_btn")
+        if pin is None:
+            logger.warning("doorbell_btn 未配置 GPIO")
+            return
+
         if MOCK_SENSORS:
-            await asyncio.sleep(15)  # 启动后15s 模拟一次
+            # 开发模式: 启动后 15s 模拟一次按键
+            await asyncio.sleep(15)
             if self._running:
-                logger.info("🔔 模拟: 外卖按键触发")
+                logger.info("mock: 外卖按键触发")
                 self.tts.speak("有客到")
                 self.db.log_event("doorbell", "外卖按键触发")
+            return
 
-        # 真实 GPIO 模式 (后续实现)
-        # import gpiod
-        # ...
+        # 真实 GPIO 模式 (gpiod v2/v1/sysfs 三档降级)
+        import os
+        import contextlib
+
+        _DEBOUNCE_S = 2.0
+        _POLL_INTERVAL = 0.1
+        _EVENT_TIMEOUT = 1.0
+        last_trigger = 0.0
+
+        # 检测可用 GPIO 库
+        gpiod_v2 = False
+        gpiod_v1 = False
+        try:
+            import gpiod
+            if hasattr(gpiod, "LineSettings"):
+                from gpiod.line import Direction, Edge
+                gpiod_v2 = True
+            else:
+                gpiod_v1 = True
+        except ImportError:
+            pass
+
+        request = None
+        line = None
+        sysfs_path = None
+
+        try:
+            # --- gpiod v2 (Pi 5 / gpiod >= 2.0) ---
+            if gpiod_v2:
+                try:
+                    chip = gpiod.Chip(GPIO_CHIP)
+                    request = chip.request_lines(
+                        consumer="doorbell",
+                        config={pin: gpiod.LineSettings(
+                            direction=Direction.INPUT,
+                            edge_detection=Edge.FALLING,
+                        )},
+                    )
+                    logger.info("门铃 GPIO (gpiod v2): %s pin %d", GPIO_CHIP, pin)
+                    while self._running:
+                        edges = request.read_edge_events(_EVENT_TIMEOUT)
+                        for ev in edges:
+                            now = time.time()
+                            if now - last_trigger > _DEBOUNCE_S:
+                                last_trigger = now
+                                self._doorbell_trigger()
+                        if not edges:
+                            await asyncio.sleep(0)
+                except Exception as e:
+                    logger.debug("gpiod v2 门铃失败: %s", e)
+                    request = None
+
+            # --- gpiod v1 (旧版 Pi / gpiod < 2.0) ---
+            if not request and gpiod_v1:
+                try:
+                    chip = gpiod.Chip(GPIO_CHIP)
+                    line = chip.get_line(pin)
+                    line.request(consumer="doorbell", type=gpiod.LINE_REQ_EV_FALLING_EDGE)
+                    logger.info("门铃 GPIO (gpiod v1): %s pin %d", GPIO_CHIP, pin)
+                    while self._running:
+                        if line.event_wait(nsec=int(_EVENT_TIMEOUT * 1e9)):
+                            event = line.event_read()
+                            if event.type == gpiod.LineEvent.FALLING_EDGE:
+                                now = time.time()
+                                if now - last_trigger > _DEBOUNCE_S:
+                                    last_trigger = now
+                                    self._doorbell_trigger()
+                        await asyncio.sleep(0)
+                except Exception as e:
+                    logger.debug("gpiod v1 门铃失败: %s", e)
+                    line = None
+
+            # --- sysfs fallback (无 gpiod) ---
+            if not request and not line:
+                gpio_dir = f"/sys/class/gpio/gpio{pin}"
+                if not os.path.exists(gpio_dir):
+                    try:
+                        with open("/sys/class/gpio/export", "w") as f:
+                            f.write(str(pin))
+                        for _ in range(20):
+                            if os.path.exists(gpio_dir):
+                                break
+                            time.sleep(0.05)
+                    except OSError:
+                        pass
+                if os.path.exists(gpio_dir):
+                    with open(f"{gpio_dir}/direction", "w") as f:
+                        f.write("in")
+                    with open(f"{gpio_dir}/edge", "w") as f:
+                        f.write("falling")
+                    sysfs_path = f"{gpio_dir}/value"
+                    logger.info("门铃 GPIO (sysfs): pin %d", pin)
+                    prev_val = "1"
+                    while self._running:
+                        try:
+                            with open(sysfs_path) as f:
+                                val = f.read().strip()
+                            if prev_val == "1" and val == "0":
+                                now = time.time()
+                                if now - last_trigger > _DEBOUNCE_S:
+                                    last_trigger = now
+                                    self._doorbell_trigger()
+                            prev_val = val
+                        except OSError:
+                            pass
+                        await asyncio.sleep(_POLL_INTERVAL)
+
+        finally:
+            if request:
+                request = None
+            if line:
+                line = None
+            if sysfs_path:
+                try:
+                    with open("/sys/class/gpio/unexport", "w") as f:
+                        f.write(str(pin))
+                except Exception:
+                    pass
+
+    def _doorbell_trigger(self):
+        """门铃触发动作"""
+        logger.info("门铃按键触发")
+        self.tts.speak("有客到")
+        self.db.log_event("doorbell", "门铃按键触发")
+
+    async def _handle_k210_events(self):
+        """处理 K210 摄像头事件: 人物进出→场景触发, 手势→设备控制"""
+        if not self.sensors.has("k210"):
+            return
+        try:
+            k210 = self.sensors._sensors.get("k210")
+            if k210 is None:
+                return
+
+            # 手势 → 设备控制
+            gesture = k210.gesture
+            if gesture:
+                logger.info("K210 手势: %s", gesture)
+                gesture_actions = {
+                    "wave_up": [{"tool": "set_light", "params": {"state": "on", "brightness": 255}}],
+                    "wave_down": [{"tool": "set_light", "params": {"state": "off"}}],
+                    "wave_left": [{"tool": "set_fan", "params": {"speed": 0}}],
+                    "wave_right": [{"tool": "set_fan", "params": {"speed": 3}}],
+                }
+                actions = gesture_actions.get(gesture)
+                if actions:
+                    registry.execute_plan(actions)
+                    self.db.log_event("k210_gesture", f"gesture:{gesture} → {actions}")
+
+            # 告警事件
+            alert = k210.alert
+            if alert:
+                logger.warning("K210 告警: %s", alert)
+                self.db.log_event("k210_alert", str(alert))
+
+            # 人物进入 → 欢迎场景
+            last_event = k210.last_event
+            if last_event.get("event") == "enter":
+                person = last_event.get("person", "unknown")
+                logger.info("K210 人物进入: %s", person)
+                welcome_plan = [
+                    {"tool": "set_light", "params": {"state": "on", "brightness": 200}},
+                ]
+                registry.execute_plan(welcome_plan)
+                self.db.log_event("k210_enter", person)
+                if hasattr(k210, "send_lcd"):
+                    k210.send_lcd(f"Welcome {person}", 0x07E0)
+
+            # 人物离开 → 离家场景 (仅当无人时)
+            if last_event.get("event") == "leave" and not k210.person_present:
+                logger.info("K210 所有人已离开")
+                away_plan = [
+                    {"tool": "set_light", "params": {"state": "off"}},
+                    {"tool": "set_fan", "params": {"speed": 0}},
+                ]
+                registry.execute_plan(away_plan)
+                self.db.log_event("k210_leave", "all_left")
+
+        except Exception as e:
+            logger.debug("K210 事件处理异常: %s", e)
 
     async def _scheduler(self):
         """定时任务调度"""
@@ -409,6 +606,9 @@ class AgentOrchestrator:
                     snapshot["person_present"] = self.sensors.read("motion").value > 0.5
                 except Exception:
                     snapshot["person_present"] = False
+
+                # K210 摄像头事件处理 (人物进出/手势/告警)
+                await self._handle_k210_events()
 
                 # 场景自动触发 (v5.1): 深夜无人无灯 → 睡觉场景
                 try:

@@ -1,6 +1,6 @@
 # Agent ZX 公共知识库
 
-> 最后更新: 2026-05-03 | 版本: v5.2 | 传感器: SGP30+DHT11+BH1750+HC-SR501 | 测试: 152 passed
+> 最后更新: 2026-05-03 | 版本: v5.3 | 传感器: SGP30+DHT11+BH1750+HC-SR501+K210 | 测试: 152 passed
 
 ## 项目总览
 
@@ -8,7 +8,7 @@
 
 - **团队**: 1 人 (cube + Claude 副驾)
 - **硬件目标**: Raspberry Pi 5 8GB (BCM2712, 4×A76@2.4GHz)
-- **代码量**: ~4300 行 Python, 36 模块 (新增 ai_brain.py, scene_engine.py, profile_engine.py)
+- **代码量**: ~4500 行 Python, 38 模块 (新增 ai_brain.py, scene_engine.py, profile_engine.py, k210.py)
 - **测试**: 152 passed / 157 total, 5个预存smbus2/serial失败(Windows) (core 118 + stress 34)
 - **LLM**: Qwen2.5-1.5B-Instruct Q4_K_M GGUF (941MB, 推理 ~10 tok/s)
 - **当前分支**: master
@@ -24,6 +24,7 @@
        → FastPath(仅紧急安全网: temp>35/CO₂>2000)
        → 异常检测(z-score跳变跳过) → AI反问用户
        → ProfileEngine(行为追踪+画像构建+规律发现) → 个性化注入LLM
+K210摄像头 → UART JSON事件(enter/leave/gesture/alert) → 场景触发+设备控制
 ```
 
 ### 决策架构 (v5.2 升级)
@@ -49,11 +50,12 @@
 5. ⑤ 冰箱食材管理与保质期提醒 (NLU解析 → SQLite → 定时提醒)
 6. ⑥ 外界温度+衣物推荐 (天气数据 → LLM穿衣建议)
 7. ⑦ Web Dashboard 总控 (Flask + Chart.js, 12 API)
+8. ⑧ K210 摄像头视觉感知 (人物进出/手势控制/LCD屏显, UART JSON协议)
 
 ### 模块结构
 - `core/`: agent.py (主循环), ai_brain.py (AI决策+知识+反问+建议), profile_engine.py (画像+规律发现, NEW), scene_engine.py (6场景识别), command_handler.py (CoT+ReAct+追问+ContextManager), fastpath.py (安全网), midpath.py (AI自然语言), tool_registry.py (工具注册+并行执行)
 - `agents/`: environment_agent.py, food_agent.py, life_agent.py (分层System Prompt + TOOLS)
-- `sensors/`: co2.py (MH-Z19B), sgp30.py (SGP30), temp_humid.py (SHT30), dht11.py (DHT11), light.py, motion.py, mock.py
+- `sensors/`: co2.py (MH-Z19B), sgp30.py (SGP30), temp_humid.py (SHT30), dht11.py (DHT11), light.py, motion.py, k210.py (摄像头UART), mock.py
 - `devices/`: fan.py, light.py, ac.py, purifier.py, manager.py, base.py
 - `llm/`: engine.py, llamacpp_backend.py, rknn_backend.py, context.py
 - `knowledge/`: database.py (8表: sensor_log, event_log, foods, home_tips, user_prefs, ai_decisions, routines + 3知识查询方法)
@@ -82,6 +84,9 @@
 - [x] v5.2: 主动时段建议 (早安/午餐/傍晚/晚安, 30分钟冷却)
 - [x] v5.2: 用户画像引擎 (ProfileEngine, 5维度, 行为追踪, 规律自动发现)
 - [x] v5.2: Dashboard 画像Tab + 规律管理 + 提问分类图标
+- [x] v5.3: K210 摄像头驱动 (UART JSON协议, 人物进出/手势/告警事件, Mock)
+- [x] v5.3: K210 集成到Agent (read_k210工具, 手势→设备控制, 人物进出→场景触发)
+- [x] v5.3: K210 固件脚本 (MaixPy, YOLO人脸检测, LCD屏显, UART双向通信)
 - [x] 项目文档 (方案文档+硬件清单+部署教程+移植文档)
 
 ### 待完成
