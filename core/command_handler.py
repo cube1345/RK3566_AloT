@@ -89,28 +89,98 @@ def _parse_cot_reply(raw: str) -> str:
 
 
 def _is_meta_cot(text: str) -> bool:
-    """判断CoT分析是否为元描述(需要获取数据)而非最终答案"""
+    """判断CoT分析是否为元描述(中间推理)而非面向用户的最终回复"""
     meta_patterns = [
-        r'^需(?:要)?获取', r'^需(?:要)?查询', r'^调用', r'^查(?:询|看)',
-        r'^获取', r'^先获取', r'^先查询',
+        r'需(?:要)?获取', r'需(?:要)?查询', r'调用', r'查(?:询|看)',
+        r'获取', r'先获取', r'先查询',
+        r'用户(?:需要|想|想要|希望|要求)',
+        r'应(?:该|当)?(?:获取|查询|查看|检查)',
+        r'列(?:出|一下)', r'显示', r'看看',
     ]
     return any(re.search(p, text) for p in meta_patterns)
 
 
 def _format_action_results(actions: list[dict]) -> str:
-    """将工具执行结果格式化为自然语言"""
+    """将工具执行结果格式化为面向用户的自然语言回复"""
     if not actions:
         return ""
+    parts = []
     for a in actions:
         result = a.get("result", "")
         tool = a.get("tool", "")
-        # 格式化日期时间
         if tool == "get_date_time" and isinstance(result, dict):
             return f"今天是{result.get('date', '?')} {result.get('weekday', '')}，{result.get('time', '?')[:5]}"
-        # 格式化天气
         if tool == "get_weather" and isinstance(result, dict):
             return f"室外{result.get('condition', '?')}，温度{result.get('temp', '?')}°C，湿度{result.get('humidity', '?')}%"
-    return ""
+        # 食材列表 → 自然语言
+        if tool == "list_foods":
+            foods = result if isinstance(result, list) else []
+            if not foods:
+                return "冰箱里暂时没有食材，去买点东西吧~"
+            lines = [f"冰箱里有{len(foods)}样食材："]
+            for f in foods[:20]:
+                name = f.get("name", "?")
+                qty = f.get("quantity", 1)
+                unit = f.get("unit", "个")
+                storage = f.get("storage", "")
+                expiry = str(f.get("expiry_date", ""))[:10]
+                qty_str = f"{int(qty)}{unit}" if qty == int(qty) else f"{qty}{unit}"
+                extra = []
+                if storage:
+                    extra.append(storage)
+                if expiry:
+                    extra.append(f"{expiry}到期")
+                detail = f"({', '.join(extra)})" if extra else ""
+                lines.append(f"  • {name} {qty_str} {detail}".rstrip())
+            return "\n".join(lines)
+        # 传感器读取 → 简洁值
+        if tool in ("read_temperature",) and isinstance(result, (int, float)):
+            return f"当前温度 {result:.1f}°C"
+        if tool in ("read_co2",) and isinstance(result, (int, float)):
+            return f"当前CO₂浓度 {int(result)}ppm"
+        if tool in ("read_humidity",) and isinstance(result, (int, float)):
+            return f"当前湿度 {result:.0f}%"
+        if tool in ("read_light",) and isinstance(result, (int, float)):
+            return f"当前光照 {int(result)}lux"
+        if tool in ("read_person_present",):
+            return "有人在" if result else "没有人"
+        # 设备控制 → 确认语
+        if tool == "ac_control" and isinstance(result, dict):
+            mode = result.get("mode", "?")
+            temp = result.get("temp", "")
+            return f"空调已设为{mode}模式{' ' + str(temp) + '°C' if temp else ''}"
+        if tool == "set_fan" and isinstance(result, dict):
+            speed = result.get("speed", 0)
+            return "风扇已关闭" if speed == 0 else f"风扇已开{speed}档"
+        if tool == "set_light" and isinstance(result, dict):
+            state = result.get("state", "off")
+            return "灯已打开" if state == "on" else "灯已关闭"
+        if tool == "set_air_purifier" and isinstance(result, dict):
+            level = result.get("level", 0)
+            return "净化器已关闭" if level == 0 else f"净化器已开{level}档"
+        # 通用: 尝试格式化
+        line = _format_single_result(tool, result)
+        if line:
+            parts.append(line)
+    return "\n".join(parts) if parts else ""
+
+
+def _format_single_result(tool: str, result) -> str:
+    """单个工具结果的友好格式化"""
+    if isinstance(result, str):
+        return f"{result}"
+    if isinstance(result, dict):
+        # 简洁键值
+        items = [f"{k}={v}" for k, v in result.items() if k not in ("timestamp", "raw")]
+        return f"{', '.join(items[:6])}" if items else ""
+    if isinstance(result, list):
+        if not result:
+            return ""
+        if len(result) <= 5 and all(isinstance(x, dict) for x in result):
+            names = [x.get("name", x.get("value", str(x)[:20])) for x in result[:5]]
+            return ", ".join(str(n) for n in names)
+        return f"共{len(result)}条记录"
+    return str(result)[:100] if result else ""
 
 
 class CommandHandler:
