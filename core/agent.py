@@ -23,6 +23,7 @@ from devices.light import LightDevice
 from devices.purifier import AirPurifierDevice
 from knowledge.database import Database
 from tts.speaker import TTSEngine
+from stt.listener import STTEngine
 from core.ai_brain import AIBrain
 from core.scene_engine import SceneEngine
 from core.profile_engine import ProfileEngine
@@ -37,6 +38,7 @@ class AgentOrchestrator:
         self.devices = DeviceManager()
         self.db = Database()
         self.tts = TTSEngine()
+        self.stt = STTEngine()
         self.midpath = MidPathHandler()
         self.ai_brain = AIBrain()
         self.scene_engine = SceneEngine()

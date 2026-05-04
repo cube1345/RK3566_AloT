@@ -284,6 +284,37 @@ def api_answer_question():
     return jsonify({"status": "dismissed"})
 
 
+# ===== 语音交互 (v5.3) =====
+
+@app.route("/api/stt", methods=["POST"])
+def api_stt():
+    """语音→文字: 接收 WAV 音频, 返回转录文本"""
+    if not orchestrator or not orchestrator.stt:
+        return jsonify({"text": "", "error": "STT 未就绪"})
+
+    audio = request.get_data()
+    if not audio or len(audio) < 44:  # WAV header minimum
+        return jsonify({"text": "", "error": "无音频数据"})
+
+    text = orchestrator.stt.transcribe(audio)
+    return jsonify({"text": text})
+
+
+@app.route("/api/tts", methods=["POST"])
+def api_tts():
+    """文字→语音: 将文本通过音箱播报"""
+    data = request.json or {}
+    text = data.get("text", "").strip()
+    if not text or not orchestrator or not orchestrator.tts:
+        return jsonify({"status": "ignored"})
+
+    try:
+        orchestrator.tts.speak(text)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "detail": str(e)})
+
+
 # ===== 页面 =====
 
 @app.route("/")

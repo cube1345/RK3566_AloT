@@ -119,6 +119,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); min-
 .btn-send { background: var(--accent); color: #fff; }
 .btn-send:hover { opacity: 0.9; }
 .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-mic { background: var(--surface2); color: var(--text2); border: 1px solid var(--border) !important; width: 44px; padding: 10px 0 !important; font-size: 18px !important; }
+.btn-mic:hover { border-color: var(--accent) !important; color: var(--accent); }
+.btn-mic.recording { background: var(--red); color: #fff; border-color: var(--red) !important; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.4); } 50% { box-shadow: 0 0 0 8px rgba(248,113,113,0); } }
 
 /* Options row */
 .options-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
@@ -238,7 +242,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); min-
     </div>
 
     <div class="input-bar">
-      <input id="cmdInput" type="text" placeholder="输入指令..." onkeydown="if(event.key==='Enter')sendCommand()" autofocus>
+      <button class="btn-mic" onclick="toggleMic()" id="micBtn" title="语音输入">🎤</button>
+      <input id="cmdInput" type="text" placeholder="输入指令或点击🎤说话..." onkeydown="if(event.key==='Enter')sendCommand()" autofocus>
       <button class="btn-send" onclick="sendCommand()" id="sendBtn">发送</button>
     </div>
   </div>
@@ -251,6 +256,104 @@ let isProcessing = false;
 // ===== Helper =====
 function $(id) { return document.getElementById(id); }
 async function fetchJSON(url, opts) { try { const r = await fetch(url, opts); if (!r.ok) throw new Error(r.status); return r.json(); } catch(e) { console.warn('fetchJSON failed:', url, e.message); return {}; } }
+
+// ===== Voice input (STT) =====
+let mediaRecorder = null;
+let audioChunks = [];
+
+async function toggleMic() {
+  const btn = $('micBtn');
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    // 停止录音
+    mediaRecorder.stop();
+    btn.classList.remove('recording');
+    btn.textContent = '⏳';
+    return;
+  }
+  // 开始录音
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {sampleRate: 16000, channelCount: 1}});
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm;codecs=opus'});
+    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      if (!audioChunks.length) { btn.textContent = '🎤'; return; }
+      try {
+        // 转 WAV 并上传到 STT
+        const blob = new Blob(audioChunks);
+        const arrayBuffer = await blob.arrayBuffer();
+        // 用 AudioContext 解码 → 重采样为 16kHz 16-bit mono PCM WAV
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+        const audioBuf = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+        const wav = audioBufferToWav(audioBuf);
+        const resp = await fetch('/api/stt', {method: 'POST', body: wav});
+        const data = await resp.json();
+        audioCtx.close();
+        if (data.text) {
+          $('cmdInput').value = data.text;
+          sendCommand();  // 自动发送
+        }
+      } catch(e) { console.warn('STT err', e); }
+      btn.textContent = '🎤';
+    };
+    mediaRecorder.start();
+    btn.classList.add('recording');
+    btn.textContent = '🔴';
+    // 最长录10秒
+    setTimeout(() => { if (mediaRecorder.state === 'recording') { mediaRecorder.stop(); btn.classList.remove('recording'); } }, 10000);
+  } catch(e) {
+    console.warn('Mic access denied or not supported', e);
+    alert('无法访问麦克风，请检查浏览器权限');
+    btn.textContent = '🎤';
+  }
+}
+
+// 将 AudioBuffer 转为 WAV (16-bit PCM mono)
+function audioBufferToWav(buffer) {
+  const numChannels = 1;
+  const sampleRate = buffer.sampleRate;
+  const length = buffer.length;
+  const arrayBuffer = new ArrayBuffer(44 + length * 2);
+  const view = new DataView(arrayBuffer);
+  // WAV header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + length * 2, true);
+  writeString(view, 8, 'WAVE');
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);         // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(view, 36, 'data');
+  view.setUint32(40, length * 2, true);
+  // PCM samples
+  const samples = buffer.getChannelData(0);
+  let offset = 44;
+  for (let i = 0; i < length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+  return new Blob([arrayBuffer], {type: 'audio/wav'});
+}
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+// ===== Auto-TTS: AI回复后自动语音播报 =====
+function speakReply(text) {
+  if (!text || text.length > 200) return;
+  fetch('/api/tts', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text}),
+  }).catch(() => {});
+}
 
 // ===== Send command =====
 async function sendCommand() {
@@ -497,6 +600,11 @@ function finishProcessing(msgEl, msgId, data) {
   msgEl.parentElement.scrollTop = msgEl.parentElement.scrollHeight;
   isProcessing = false;
   $('sendBtn').disabled = false;
+
+  // 自动语音播报 (跳过错误/空回复)
+  if (data.reply && !data.reply.includes('LLM 无响应') && !data.reply.includes('连接失败') && !data.reply.includes('服务异常') && !data.reply.startsWith('收到:')) {
+    speakReply(data.reply);
+  }
 }
 
 // ===== Render =====

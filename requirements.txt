@@ -2,4 +2,5 @@ flask>=3.0
 pyserial>=3.5       # MH-Z19B UART
 smbus2>=0.4         # SHT30 / BH1750 I2C
 gpiod>=2.0          # HC-SR501 / 继电器 GPIO (libgpiod)
+vosk>=0.3           # STT 离线语音识别
 pytest>=8.0
