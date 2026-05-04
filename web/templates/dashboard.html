@@ -129,6 +129,21 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); min-
 .status-section { margin-top: auto; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text3); }
 .status-section .kv { display: flex; justify-content: space-between; padding: 2px 0; }
 
+/* Mini chart */
+.mini-chart { margin-top: 6px; padding: 6px 8px; background: var(--surface2); border-radius: 6px; }
+.mini-chart canvas { width: 100%; height: 80px; }
+
+/* Food inventory */
+.food-list { max-height: 180px; overflow-y: auto; }
+.food-item { display: flex; align-items: center; justify-content: space-between; padding: 5px 8px; font-size: 11px; border-radius: 4px; margin-bottom: 2px; background: var(--surface2); }
+.food-item .food-name { color: var(--text); flex: 1; }
+.food-item .food-expiry { color: var(--text3); font-size: 10px; white-space: nowrap; margin-left: 6px; }
+.food-item.expiring { border-left: 2px solid var(--orange); }
+.food-item.expired { border-left: 2px solid var(--red); }
+.food-item.expired .food-expiry { color: var(--red); }
+.food-item.expiring .food-expiry { color: var(--orange); }
+.food-empty { font-size: 11px; color: var(--text3); text-align: center; padding: 8px; }
+
 /* Responsive */
 @media (max-width: 768px) {
   .app { flex-direction: column; }
@@ -173,6 +188,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); min-
         <div class="sensor-row"><span class="name">光照</span><span><span class="val" id="lightVal">--</span><span class="unit">lux</span></span></div>
         <div class="sensor-row"><span class="name">人体</span><span><span class="val" id="motionVal">--</span></span></div>
       </div>
+      <div class="mini-chart"><canvas id="tempChart"></canvas></div>
     </div>
 
     <div class="sidebar-section">
@@ -185,7 +201,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); min-
       </div>
     </div>
 
-    <div class="sidebar-section" id="quickCmds" style="display:none;">
+    <div class="sidebar-section">
+      <h3>🥬 冰箱食材</h3>
+      <div class="food-list" id="foodList">
+        <div class="food-empty">加载中...</div>
+      </div>
+    </div>
+
+    <div class="sidebar-section" id="quickCmds">
       <h3>⚡ 快捷指令</h3>
       <div class="quick-cmds">
         <span class="quick-cmd" onclick="sendText('晚安')">🌙 晚安</span>
@@ -227,7 +250,7 @@ let isProcessing = false;
 
 // ===== Helper =====
 function $(id) { return document.getElementById(id); }
-async function fetchJSON(url, opts) { const r = await fetch(url, opts); return r.json(); }
+async function fetchJSON(url, opts) { try { const r = await fetch(url, opts); if (!r.ok) throw new Error(r.status); return r.json(); } catch(e) { console.warn('fetchJSON failed:', url, e.message); return {}; } }
 
 // ===== Send command =====
 async function sendCommand() {
@@ -574,33 +597,132 @@ function toggleCot(header) {
 
 // ===== Sensor & device updates =====
 async function updateSensors() {
-  const d = await fetchJSON('/api/sensors');
-  const co2 = d.co2?.value;
-  $('co2Val').textContent = co2 != null ? Math.round(co2) : '--';
-  $('tempVal').textContent = d.temperature?.value != null ? d.temperature.value.toFixed(1) : '--';
-  $('humidVal').textContent = d.humidity?.value != null ? d.humidity.value.toFixed(0) : '--';
-  $('lightVal').textContent = d.light?.value != null ? Math.round(d.light.value) : '--';
-  $('motionVal').textContent = d.motion?.value > 0.5 ? '👤 有人' : '⬜ 无人';
+  try {
+    const d = await fetchJSON('/api/sensors');
+    const co2 = d.co2?.value;
+    $('co2Val').textContent = co2 != null ? Math.round(co2) : '--';
+    $('tempVal').textContent = d.temperature?.value != null ? d.temperature.value.toFixed(1) : '--';
+    $('humidVal').textContent = d.humidity?.value != null ? d.humidity.value.toFixed(0) : '--';
+    $('lightVal').textContent = d.light?.value != null ? Math.round(d.light.value) : '--';
+    $('motionVal').textContent = d.motion?.value > 0.5 ? '👤 有人' : '⬜ 无人';
+  } catch(e) { console.warn('updateSensors err', e); }
 }
 
 async function updateDevices() {
-  const d = await fetchJSON('/api/devices');
-  $('devFan').textContent = d.fan?.state || '--';
-  const light = d.light;
-  $('devLight').textContent = light?.state === 'on' ? `开(${light.brightness})` : (light?.state || '--');
-  $('devAc').textContent = d.ac?.state || '--';
-  $('devPurifier').textContent = d.purifier?.state || '--';
+  try {
+    const d = await fetchJSON('/api/devices');
+    $('devFan').textContent = d.fan?.state || '--';
+    const light = d.light;
+    $('devLight').textContent = light?.state === 'on' ? `开(${light.brightness})` : (light?.state || '--');
+    $('devAc').textContent = d.ac?.state || '--';
+    $('devPurifier').textContent = d.purifier?.state || '--';
+  } catch(e) { console.warn('updateDevices err', e); }
 }
 
 async function updateStatus() {
-  const s = await fetchJSON('/api/status');
-  $('sysLlm').textContent = s.llm_loaded ? '🟢 已加载' : '🔴 未加载';
-  $('sysMode').textContent = s.mock_mode ? 'Mock' : 'Hardware';
-  $('sysTools').textContent = s.tools + '个';
+  try {
+    const s = await fetchJSON('/api/status');
+    $('sysLlm').textContent = s.llm_loaded ? '🟢 已加载' : '🔴 未加载';
+    $('sysMode').textContent = s.mock_mode ? 'Mock' : 'Hardware';
+    $('sysTools').textContent = s.tools + '个';
+  } catch(e) { console.warn('updateStatus err', e); }
 }
 
 async function loadEvents() {
   // Just update sidebar implicitly
+}
+
+// ===== Temp/Humidity chart =====
+let tempChart = null;
+
+async function updateChart() {
+  try {
+    const tData = await fetchJSON('/api/sensor_log?sensor=temperature&hours=3');
+    const hData = await fetchJSON('/api/sensor_log?sensor=humidity&hours=3');
+
+    const tArr = Array.isArray(tData) ? tData : [];
+    const hArr = Array.isArray(hData) ? hData : [];
+
+    const labels = tArr.map(v => {
+      const d = new Date(v.timestamp * 1000);
+      return d.getHours() + ':' + String(d.getMinutes()).padStart(2,'0');
+    });
+    const temps = tArr.map(v => v.value);
+    const humids = hArr.map(v => v.value);
+
+    const ctx = $('tempChart').getContext('2d');
+    if (tempChart) tempChart.destroy();
+
+    tempChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: '温度 °C',
+            data: temps,
+            borderColor: '#fb923c',
+            backgroundColor: 'rgba(251,146,60,0.1)',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.3,
+            yAxisID: 'y',
+          },
+          {
+            label: '湿度 %',
+            data: humids,
+            borderColor: '#22d3ee',
+            backgroundColor: 'rgba(34,211,238,0.05)',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            tension: 0.3,
+            yAxisID: 'y1',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { intersect: false, mode: 'index' },
+        plugins: {
+          legend: { display: true, labels: { boxWidth: 10, boxHeight: 2, padding: 8, font: { size: 9 }, color: '#9494a4' } },
+        },
+        scales: {
+          x: { display: true, ticks: { font: { size: 8 }, color: '#646476', maxTicksLimit: 6 }, grid: { display: false } },
+          y: { type: 'linear', position: 'left', title: { display: true, text: '°C', font: { size: 8 }, color: '#fb923c' }, ticks: { font: { size: 8 }, color: '#646476' }, grid: { color: 'rgba(255,255,255,0.04)' }, min: 10, max: 40 },
+          y1: { type: 'linear', position: 'right', title: { display: true, text: '%', font: { size: 8 }, color: '#22d3ee' }, ticks: { font: { size: 8 }, color: '#646476' }, grid: { drawOnChartArea: false }, min: 0, max: 100 },
+        },
+      },
+    });
+  } catch(e) { console.warn('updateChart err', e); }
+}
+
+// ===== Food inventory =====
+async function updateFoods() {
+  try {
+    const foods = await fetchJSON('/api/foods');
+    const container = $('foodList');
+    if (!foods || !foods.length) {
+      container.innerHTML = '<div class="food-empty">冰箱空空，买点食材吧 🛒</div>';
+      return;
+    }
+    const now = new Date();
+    let html = '';
+    for (const f of foods) {
+      let cls = '';
+      if (f.expiry_date) {
+        const exp = new Date(f.expiry_date);
+        const days = Math.ceil((exp - now) / 86400000);
+        if (days <= 0) cls = 'expired';
+        else if (days <= 3) cls = 'expiring';
+      }
+      const qty = f.quantity ? `${f.quantity}${f.unit || '个'} ` : '';
+      const expStr = f.expiry_date || '--';
+      html += `<div class="food-item ${cls}"><span class="food-name">${escapeHtml(qty + f.name)}</span><span class="food-expiry">${expStr}</span></div>`;
+    }
+    container.innerHTML = html;
+  } catch(e) { console.warn('updateFoods err', e); }
 }
 
 // ===== Poll =====
@@ -608,11 +730,15 @@ setInterval(updateSensors, 3000);
 setInterval(updateDevices, 5000);
 setInterval(updateStatus, 10000);
 setInterval(pollQuestion, 5000);
+setInterval(updateChart, 120000);   // 2分钟刷新图表
+setInterval(updateFoods, 30000);    // 30秒刷新食材
 
 // Initial
 updateSensors();
 updateDevices();
 updateStatus();
+updateChart();
+updateFoods();
 
 // ===== Question polling =====
 async function pollQuestion() {
