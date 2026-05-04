@@ -62,7 +62,8 @@ class MotionSensor(BaseSensor):
             self._init_gpiod_v2()
         if self._request:
             try:
-                return self._request.get_value(self._pin)
+                val = self._request.get_value(self._pin)
+                return int(val)
             except Exception as e:
                 logger.debug("gpiod v2 读取失败: %s", e)
                 self._request = None
