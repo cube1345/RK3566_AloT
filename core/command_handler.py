@@ -80,7 +80,18 @@ def _detect_ambiguity(text: str) -> dict | None:
 
 
 def _parse_cot_reply(raw: str) -> str:
-    """从CoT输出中提取'分析'字段作为自然语言回复"""
+    """从CoT输出中提取'回复'字段, fallback到'分析'字段"""
+    # 优先提取LLM生成的"回复"字段 (v5.3: LLM直接写用户回复)
+    for pattern in (
+        r'回复\s*[:：]\s*(.+?)(?:\n(?:观察|分析|决策|反问|$)|$)',
+        r'回复\s*[:：]\s*(.+)$',
+    ):
+        m = re.search(pattern, raw, re.MULTILINE | re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+            if text and len(text) < 300:
+                return text
+    # Fallback: 提取"分析"字段
     for pattern in (r'分析\s*[:：]\s*(.+?)(?:\n|$)', r'分析\s*[:：]\s*(.+?)$'):
         m = re.search(pattern, raw, re.MULTILINE)
         if m:
@@ -498,30 +509,36 @@ class CommandHandler:
         persona_block = f"{persona}\n" if persona else ""
 
         return (
-            "你是智能家居AI管家。进行任务时请按以下步骤思考：\n\n"
-            "观察: 理解用户指令和当前环境。\n"
-            "分析: 推理用户真正需要什么操作。\n"
-            "决策: 输出JSON工具链。\n\n"
+            "你是智能家居AI管家。严格按以下4步思考并输出：\n\n"
+            "观察: 解读用户指令 + 当前环境数据。\n"
+            "分析: 推理用户真实意图，决定是否需要调用工具。\n"
+            "决策: JSON工具链数组(不需操作输出[]，不确定时用反问)。\n"
+            "回复: 面向用户的自然语言回答(一句话，友好亲切)。\n\n"
             "=== 规则 ===\n"
-            '1. 必须包含「观察/分析/决策」三个步骤\n'
-            "2. 决策部分只输出JSON数组，首字符[末字符]\n"
-            "3. 不确定用户意图时，用 [反问] 格式代替决策\n"
-            "4. 不需操作时决策输出[]\n"
-            "5. 不得输出EXPLANATION/TOOLS/行动等标记\n\n"
+            "1. 必须包含观察/分析/决策/回复四个字段\n"
+            "2. 决策是纯JSON数组，首字符[末字符]\n"
+            "3. 回复是给用户看的最终答案，不说内部推理\n\n"
             "=== 示例 ===\n"
-            "用户: 太热了 环境: temperature=32°C, humidity=70%\n"
-            "观察: 用户反馈热，当前32°C湿度70%体感闷热\n"
-            "分析: 应降温除湿，开空调制冷26°C同时风扇辅助\n"
-            "决策: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26,"
-            "\"fan_speed\":\"auto\"}},{\"tool\":\"set_fan\",\"params\":{\"speed\":2}}]\n\n"
-            "用户: 冰箱里有什么\n"
-            "观察: 用户查询冰箱库存\n"
-            "分析: 列出所有食材即可\n"
-            "决策: [{\"tool\":\"list_foods\",\"params\":{}}]\n\n"
-            f"用户: 你好\n"
+            "用户: 太热了 环境: temperature=32°C, co2=600ppm\n"
+            "观察: 用户嫌热，当前32°C偏高\n"
+            "分析: 需降温，空调制冷26°C+风扇辅助\n"
+            "决策: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26,\"fan_speed\":\"auto\"}},{\"tool\":\"set_fan\",\"params\":{\"speed\":2}}]\n"
+            "回复: 已开启空调制冷26°C并启动风扇，很快就凉快了~\n\n"
+            "用户: 冰箱里有什么 环境: temperature=25°C, co2=763ppm\n"
+            "观察: 用户想知道冰箱库存\n"
+            "分析: 查询所有食材\n"
+            "决策: [{\"tool\":\"list_foods\",\"params\":{}}]\n"
+            "回复: 好的，我来看看冰箱里有什么。\n\n"
+            "用户: 今天几号\n"
+            "观察: 用户想知道当前日期时间\n"
+            "分析: 获取日期时间信息\n"
+            "决策: [{\"tool\":\"get_date_time\",\"params\":{}}]\n"
+            "回复: 让我看看今天的日期。\n\n"
+            "用户: 你好 环境: temperature=25°C\n"
             "观察: 用户打招呼\n"
             "分析: 无需操作，友好回应\n"
-            "决策: []\n\n"
+            "决策: []\n"
+            "回复: 你好！有什么可以帮你的吗？\n\n"
             f"{conv_block}"
             f"{persona_block}"
             f"角色: {agent_role}\n\n"
@@ -645,29 +662,37 @@ class CommandHandler:
         self, agent: str, actions: list[dict], text: str, llm_used: bool,
         llm_raw: str = "",
     ) -> str:
-        # 格式化工具结果 (优先处理信息查询类工具)
+        # 提取 CoT "回复" 字段 (LLM 生成的用户友好回复)
+        cot_reply = _parse_cot_reply(llm_raw) if llm_raw else ""
+        # 格式化工具结果 (食材列表/传感器/设备控制等)
         formatted = _format_action_results(actions)
+
+        # 组合: LLM 回复(引言) + 格式化结果(内容)
+        if cot_reply and formatted:
+            # LLM的回复可能是"好的，我来看看"这种过渡语，拼接格式化结果
+            if len(cot_reply) < 20 or any(kw in cot_reply for kw in ("看看", "查询", "帮你", "马上")):
+                return f"{cot_reply}\n\n{formatted}"
+            return cot_reply  # LLM回复已足够完整，优先使用
+
         if formatted:
             return formatted
 
-        # CoT分析作为自然语言回复 (信息查询类结果已在上面处理)
-        if llm_raw:
-            cot_reply = _parse_cot_reply(llm_raw)
-            if cot_reply and not _is_meta_cot(cot_reply):
-                return cot_reply
+        # 纯CoT回复 (设备控制/无操作 等场景)
+        if cot_reply and not _is_meta_cot(cot_reply):
+            return cot_reply
 
+        # 通用动作结果
         if actions:
             parts = []
             for a in actions:
                 r = a.get("result", "")
-                parts.append(f"{a['tool']}: {r}" if r else a["tool"])
+                line = _format_single_result(a.get("tool", ""), r)
+                parts.append(line or f"{a['tool']}: ok")
             return "\n".join(parts)
 
         # CoT分析即使"meta"也算回复
-        if llm_raw:
-            cot_reply = _parse_cot_reply(llm_raw)
-            if cot_reply:
-                return cot_reply
+        if cot_reply:
+            return cot_reply
 
         # 无工具调用: 纯 LLM 对话
         if llm_used:
