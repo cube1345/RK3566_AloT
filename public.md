@@ -7,7 +7,7 @@
 **Agent ZX** — 智能家居端侧 Agent 自动化管家，参加 2026 中兴捧月初赛·兴享智家赛道。
 
 - **团队**: 1 人 (cube + Claude 副驾)
-- **硬件目标**: Raspberry Pi 5 8GB (BCM2712, 4×A76@2.4GHz)
+- **硬件目标**: Raspberry Pi 5 4GB (BCM2712, 4×A76@2.4GHz)
 - **代码量**: ~4500 行 Python, 38 模块 (新增 ai_brain.py, scene_engine.py, profile_engine.py, k210.py)
 - **测试**: 152 passed / 157 total, 5个预存smbus2/serial失败(Windows) (core 118 + stress 34)
 - **LLM**: Qwen2.5-1.5B-Instruct Q4_K_M GGUF (941MB, 推理 ~15-20 tok/s, n_threads=4, n_batch=512)

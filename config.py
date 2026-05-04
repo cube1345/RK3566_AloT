@@ -140,7 +140,7 @@ LLM_MODEL = os.getenv("AGENT_LLM", str(ROOT / "models/Qwen2.5-1.5B-Instruct.Q4_K
 LLM_CTX_SIZE = 4096
 LLM_MAX_TOKENS = 512
 LLM_TEMPERATURE = 0.0
-LLM_N_THREADS = int(os.getenv("AGENT_LLM_THREADS", "4"))  # Pi5 4核全用
+LLM_N_THREADS = int(os.getenv("AGENT_LLM_THREADS", "4"))  # Pi5 4核全用 (4GB内存可降至3)
 LLM_N_BATCH = int(os.getenv("AGENT_LLM_BATCH", "512"))    # prompt批处理大小
 
 # ===== Agent =====
