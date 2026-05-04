@@ -205,18 +205,38 @@ class CommandHandler:
         # 发送上下文供前端显示
         yield {"phase": "context", "text": context}
 
-        # 真正的token级流式生成
+        # 尝试流式生成
         full_text = ""
+        stream_error = ""
         try:
             for token in self._llm.generate_stream(user_prompt, system=system_prompt):
                 if token:
                     full_text += token
                     yield {"phase": "token", "text": token}
         except Exception as e:
+            stream_error = str(e)
             logger.warning("流式生成失败: %s", e)
 
+        # 流式无输出 → 回退到非流式 generate(), 然后模拟流式输出
         if not full_text:
-            yield {"phase": "done", "reply": "LLM 无响应", "actions": [], "agent": agent_name, "llm_used": False}
+            logger.info("流式无输出, 回退非流式 (stream_error=%s)", stream_error[:60] if stream_error else "none")
+            try:
+                full_text = self._llm.generate(user_prompt, system=system_prompt)
+                if full_text:
+                    # 按小块发送, 模拟流式渲染 (每块3-5字, 约30ms间隔)
+                    import time as _time
+                    chunk_size = 4
+                    for i in range(0, len(full_text), chunk_size):
+                        yield {"phase": "token", "text": full_text[i:i+chunk_size]}
+                        _time.sleep(0.03)
+            except Exception as e:
+                if not stream_error:
+                    stream_error = str(e)
+                logger.warning("非流式回退也失败: %s", e)
+
+        if not full_text:
+            err_msg = f"LLM 无响应" + (f" ({stream_error})" if stream_error else "")
+            yield {"phase": "done", "reply": err_msg, "actions": [], "agent": agent_name, "llm_used": False}
             return
 
         logger.info("LLM stream: %.200s", full_text)
@@ -239,16 +259,21 @@ class CommandHandler:
             except Exception as e:
                 logger.warning("tool exec failed: %s", e)
 
-        # 构建回复
+        # 构建回复 (保证非空)
         reply = self._build_reply(agent_name, actions, text, True, full_text)
+        if not reply:
+            reply = f"收到: {text[:60]}"
 
-        if self._db:
-            self._db.log_event("user_command", f"[{agent_name}] {text[:100]}")
-            for a in actions:
-                self._db.log_event("tool_exec", f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
-            import datetime
-            now = datetime.datetime.now()
-            self._db.log_behavior("command", text[:200], agent=agent_name, hour=now.hour, day=now.weekday())
+        try:
+            if self._db:
+                self._db.log_event("user_command", f"[{agent_name}] {text[:100]}")
+                for a in actions:
+                    self._db.log_event("tool_exec", f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+                import datetime
+                now = datetime.datetime.now()
+                self._db.log_behavior("command", text[:200], agent=agent_name, hour=now.hour, day=now.weekday())
+        except Exception:
+            pass
 
         self._context.add_assistant(reply, action=agent_name)
         yield {"phase": "done", "reply": reply, "actions": [{"tool": a.get("tool", ""), "result": str(a.get("result", ""))[:100]} for a in actions], "agent": agent_name, "llm_used": True}
@@ -446,6 +471,7 @@ class CommandHandler:
         all_actions = []
         observation = ""
         llm_used = False
+        llm_raw = ""
         reasoning_trace = []
 
         for iteration in range(max_iter):
@@ -483,6 +509,7 @@ class CommandHandler:
                 raw = self._llm.generate(user_prompt, system=system_prompt)
                 tool_chain = _parse_tool_chain(raw)
                 llm_used = True
+                llm_raw = raw
                 # 提取分析轨迹
                 cot = _parse_cot_reply(raw)
                 if cot:
@@ -504,7 +531,7 @@ class CommandHandler:
             logger.info("ReAct[%d/%d]: %d工具 → %s",
                         iteration+1, max_iter, len(actions), observation[:100])
 
-        reply = self._build_reply(agent_name, all_actions, text, llm_used)
+        reply = self._build_reply(agent_name, all_actions, text, llm_used, llm_raw)
 
         if self._db:
             self._db.log_event("user_command", f"[{agent_name}][ReAct] {text[:100]}")
@@ -522,7 +549,7 @@ class CommandHandler:
             "actions": all_actions,
             "agent": agent_name,
             "llm_used": llm_used,
-            "llm_raw": raw if llm_used else "",
+            "llm_raw": llm_raw,
             "iterations": iteration + 1,
         }
 

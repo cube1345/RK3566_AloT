@@ -272,14 +272,25 @@ function sendText(text) {
   let currentPhase = null;
   let contextText = '';
 
+  // SSE 流式请求 (30s超时)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
   fetch('/api/command/stream', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text}),
+    signal: controller.signal,
   }).then(async resp => {
+    clearTimeout(timeoutId);
+    if (!resp.ok) {
+      finishProcessing(thinkMsg, msgId, {reply: '服务异常: ' + resp.status, actions: [], agent: '', llm_used: false});
+      return;
+    }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
+    let receivedDone = false;
 
     while (true) {
       const {done, value} = await reader.read();
@@ -291,13 +302,20 @@ function sendText(text) {
         if (!line.startsWith('data: ')) continue;
         try {
           const data = JSON.parse(line.slice(6));
+          if (data.phase === 'done') receivedDone = true;
           handleStreamEvent(thinkMsg, data, msgId, {tokenBuffer, phaseCards, currentPhase, contextText}, (s) => { tokenBuffer = s.tokenBuffer; phaseCards = s.phaseCards; currentPhase = s.currentPhase; contextText = s.contextText; });
         } catch(e) { console.error('parse err', e); }
       }
     }
+    // 流结束但没有收到 done 事件 → 兜底
+    if (!receivedDone) {
+      finishProcessing(thinkMsg, msgId, {reply: tokenBuffer ? '' : 'LLM 无响应', actions: [], agent: '', llm_used: false});
+    }
   }).catch(e => {
+    clearTimeout(timeoutId);
     console.error('stream err', e);
-    finishProcessing(thinkMsg, msgId, '连接失败，请重试');
+    const errMsg = e.name === 'AbortError' ? '请求超时，请重试' : '连接失败，请重试';
+    finishProcessing(thinkMsg, msgId, {reply: errMsg, actions: [], agent: '', llm_used: false});
   });
 }
 
@@ -409,6 +427,11 @@ function liveRender(container, state) {
 }
 
 function finishProcessing(msgEl, msgId, data) {
+  // 容错: 非对象数据转为兜底对象
+  if (!data || typeof data !== 'object') {
+    data = {reply: String(data || '请求失败'), actions: [], agent: '', llm_used: false};
+  }
+
   const contentDiv = $(msgId + '-content');
   const thinkingDiv = $(msgId + '-thinking');
   if (thinkingDiv) thinkingDiv.style.display = 'none';
@@ -440,6 +463,11 @@ function finishProcessing(msgEl, msgId, data) {
       html += `<span class="option-btn" onclick="sendText('${escapeAttr(opt)}')">${escapeHtml(opt)}</span>`;
     }
     html += '</div>';
+  }
+
+  // 兜底: 如果没有任何内容显示, 至少显示回复文本
+  if (!html.trim()) {
+    html = `<div style="white-space:pre-wrap; font-size:13px; color:var(--text);">${escapeHtml(data.reply || '完成')}</div>`;
   }
 
   contentDiv.innerHTML = html;
