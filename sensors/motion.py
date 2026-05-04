@@ -14,7 +14,7 @@ try:
     _HAS_GPIOD = True
     _GPIOD_V2 = hasattr(gpiod, "LineSettings")
     if _GPIOD_V2:
-        from gpiod.line import Direction
+        from gpiod.line import Direction, Value
 except ImportError:
     _HAS_GPIOD = False
     _GPIOD_V2 = False
@@ -63,7 +63,7 @@ class MotionSensor(BaseSensor):
         if self._request:
             try:
                 val = self._request.get_value(self._pin)
-                return int(val)
+                return 1 if val == Value.ACTIVE else 0
             except Exception as e:
                 logger.debug("gpiod v2 读取失败: %s", e)
                 self._request = None
