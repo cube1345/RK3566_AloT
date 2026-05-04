@@ -391,11 +391,10 @@ class AgentOrchestrator:
 
         # 真实 GPIO 模式 (gpiod v2/v1/sysfs 三档降级)
         import os
-        import contextlib
+        from datetime import timedelta
 
         _DEBOUNCE_S = 2.0
         _POLL_INTERVAL = 0.1
-        _EVENT_TIMEOUT = 1.0
         last_trigger = 0.0
 
         # 检测可用 GPIO 库
@@ -424,12 +423,12 @@ class AgentOrchestrator:
                         consumer="doorbell",
                         config={pin: gpiod.LineSettings(
                             direction=Direction.INPUT,
-                            edge_detection=Edge.FALLING,
+                            edge_detection=Edge.BOTH,
                         )},
                     )
                     logger.info("门铃 GPIO (gpiod v2): %s pin %d", GPIO_CHIP, pin)
                     while self._running:
-                        edges = request.read_edge_events(_EVENT_TIMEOUT)
+                        edges = request.read_edge_events(timedelta(seconds=1))
                         for ev in edges:
                             now = time.time()
                             if now - last_trigger > _DEBOUNCE_S:
@@ -438,7 +437,7 @@ class AgentOrchestrator:
                         if not edges:
                             await asyncio.sleep(0)
                 except Exception as e:
-                    logger.debug("gpiod v2 门铃失败: %s", e)
+                    logger.warning("gpiod v2 门铃失败: %s", e)
                     request = None
 
             # --- gpiod v1 (旧版 Pi / gpiod < 2.0) ---
@@ -446,12 +445,12 @@ class AgentOrchestrator:
                 try:
                     chip = gpiod.Chip(GPIO_CHIP)
                     line = chip.get_line(pin)
-                    line.request(consumer="doorbell", type=gpiod.LINE_REQ_EV_FALLING_EDGE)
+                    line.request(consumer="doorbell", type=gpiod.LINE_REQ_EV_BOTH_EDGES)
                     logger.info("门铃 GPIO (gpiod v1): %s pin %d", GPIO_CHIP, pin)
                     while self._running:
-                        if line.event_wait(nsec=int(_EVENT_TIMEOUT * 1e9)):
+                        if line.event_wait(nsec=int(1e9)):
                             event = line.event_read()
-                            if event.type == gpiod.LineEvent.FALLING_EDGE:
+                            if event.type in (gpiod.LineEvent.FALLING_EDGE, gpiod.LineEvent.RISING_EDGE):
                                 now = time.time()
                                 if now - last_trigger > _DEBOUNCE_S:
                                     last_trigger = now
@@ -478,7 +477,7 @@ class AgentOrchestrator:
                     with open(f"{gpio_dir}/direction", "w") as f:
                         f.write("in")
                     with open(f"{gpio_dir}/edge", "w") as f:
-                        f.write("falling")
+                        f.write("both")
                     sysfs_path = f"{gpio_dir}/value"
                     logger.info("门铃 GPIO (sysfs): pin %d", pin)
                     prev_val = "1"
@@ -486,7 +485,7 @@ class AgentOrchestrator:
                         try:
                             with open(sysfs_path) as f:
                                 val = f.read().strip()
-                            if prev_val == "1" and val == "0":
+                            if val != prev_val:
                                 now = time.time()
                                 if now - last_trigger > _DEBOUNCE_S:
                                     last_trigger = now
