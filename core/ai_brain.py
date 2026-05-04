@@ -49,25 +49,27 @@ class AIBrain:
 
         system_prompt = (
             "你是智能家居AI管家。基于传感器数据决定是否需要操作。\n\n"
-            "原则:\n"
-            "1. 仅明确需要时才行动。舒适与节能并重。\n"
-            "2. 不重复刚执行的操作。\n"
-            "3. 尊重用户偏好。\n"
-            "4. CO₂>1500需通风, 温度>30需降温, 温度<16需升温。\n"
-            "5. 有人→舒适优先, 无人→节能优先。\n"
-            "6. 若不确定是否该操作, 反问用户。\n"
-            "7. 若环境舒适无需操作, 可发送主动建议(如早安/晚安提醒)。\n\n"
-            "输出格式(三选一, 严格复制):\n\n"
+            "原则: CO₂>1500需通风, 温度>30需降温, 温度<16需升温。有人→舒适优先, 无人→节能优先。"
+            "不重复刚执行的操作。尊重用户偏好。不确定时反问用户。\n\n"
+            "=== 输出格式 (严格按此结构) ===\n\n"
             "如需行动:\n"
-            "[行动] EXPLANATION: <中文原因>\n"
-            "TOOLS: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26,\"fan_speed\":\"auto\"}}]\n\n"
+            "观察: <传感器状态解读>\n"
+            "分析: <推理是否/为何行动>\n"
+            "决策: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26,\"fan_speed\":\"auto\"}}]\n\n"
             "如需反问:\n"
-            "[反问] QUESTION: <问题>\n"
-            "OPTIONS: [\"选项1\",\"选项2\"]\n"
-            "PENDING: [{\"tool\":\"set_fan\",\"params\":{\"speed\":3}}]\n\n"
+            "观察: <传感器状态解读>\n"
+            "分析: <推理, 说明为何不确定>\n"
+            "反问: <问题>\n"
+            "选项: [\"选项1\",\"选项2\"]\n"
+            "决策: [{\"tool\":\"set_fan\",\"params\":{\"speed\":3}}]\n\n"
             "如无需操作:\n"
-            "[无操作] EXPLANATION: <原因>\n"
-            "TOOLS: []\n\n"
+            "观察: <传感器状态解读>\n"
+            "分析: <推理为何无需行动>\n"
+            "决策: []\n\n"
+            "示例:\n"
+            "观察: 温度30°C偏高, CO₂ 600正常, 有人在场\n"
+            "分析: 温度超出舒适范围, 需制冷降温, 无需通风\n"
+            "决策: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26,\"fan_speed\":\"auto\"}}]\n\n"
             "可用工具: ac_control(mode,temp,fan_speed), set_fan(speed), "
             "set_light(state,brightness), set_air_purifier(level), "
             "tts(text), notify_display(title,body)\n"
@@ -188,14 +190,46 @@ class AIBrain:
     # ===== 内部方法 =====
 
     def _parse_decision_output(self, raw: str) -> dict:
-        """解析 LLM 输出 → {"type":"action"|"question"|"none", ...}"""
+        """解析 CoT LLM 输出 → {"type":"action"|"question"|"none", ...}"""
         explanation = ""
         tool_chain = []
 
-        # 检测反问格式: QUESTION: ... OPTIONS: [...] PENDING: [...]
-        q_m = re.search(r'QUESTION:\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
+        # 提取"分析"字段作为解释 (CoT格式)
+        exp_m = re.search(r'分析\s*[:：]\s*(.+?)(?:\n|$)', raw)
+        if exp_m:
+            explanation = exp_m.group(1).strip()
+        # 向后兼容旧格式 EXPLANATION:
+        if not explanation:
+            exp_old = re.search(r'EXPLANATION:\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
+            if exp_old:
+                explanation = exp_old.group(1).strip()
+
+        # 检测反问格式 (v5.3 CoT): 反问: ... 选项: [...] 决策: [...]
+        q_m = re.search(r'反问\s*[:：]\s*(.+?)(?:\n|$)', raw)
         if q_m:
             q_text = q_m.group(1).strip()
+            options = []
+            pending_tools = []
+            opt_m = re.search(r'选项\s*[:：]\s*(\[[\s\S]*?\])', raw)
+            if opt_m:
+                try:
+                    options = json.loads(opt_m.group(1))
+                except json.JSONDecodeError:
+                    options = ["是", "不用"]
+            # 从决策字段提取待执行工具
+            dec_m = re.search(r'决策\s*[:：]\s*(\[[\s\S]*?\])', raw)
+            if dec_m:
+                try:
+                    pending_tools = _normalize_chain(json.loads(dec_m.group(1)))
+                except json.JSONDecodeError:
+                    pass
+            return {"type": "question", "text": q_text,
+                    "options": options, "pending_tools": pending_tools}
+
+        # 向后兼容旧格式: QUESTION: ... OPTIONS: [...] PENDING: [...]
+        q_m_old = re.search(r'QUESTION:\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
+        if q_m_old:
+            q_text = q_m_old.group(1).strip()
             options = []
             pending_tools = []
             opt_m = re.search(r'OPTIONS:\s*(\[[\s\S]*?\])', raw, re.IGNORECASE)
@@ -213,19 +247,28 @@ class AIBrain:
             return {"type": "question", "text": q_text,
                     "options": options, "pending_tools": pending_tools}
 
-        exp_m = re.search(r'EXPLANATION:\s*(.+?)(?:\n|$)', raw, re.IGNORECASE)
-        if exp_m:
-            explanation = exp_m.group(1).strip()
-
-        tools_m = re.search(r'TOOLS:\s*(\[[\s\S]*?\])', raw, re.IGNORECASE)
-        if tools_m:
+        # 提取决策 JSON: CoT格式 "决策: [...]" 优先
+        dec_m = re.search(r'决策\s*[:：]\s*(\[[\s\S]*?\])', raw)
+        if dec_m:
             try:
-                parsed = json.loads(tools_m.group(1))
+                parsed = json.loads(dec_m.group(1))
                 if isinstance(parsed, list):
                     tool_chain = _normalize_chain(parsed)
             except json.JSONDecodeError:
                 pass
 
+        # 向后兼容旧格式: TOOLS: [...]
+        if not tool_chain:
+            tools_m = re.search(r'TOOLS:\s*(\[[\s\S]*?\])', raw, re.IGNORECASE)
+            if tools_m:
+                try:
+                    parsed = json.loads(tools_m.group(1))
+                    if isinstance(parsed, list):
+                        tool_chain = _normalize_chain(parsed)
+                except json.JSONDecodeError:
+                    pass
+
+        # 兜底: 通用工具链解析
         if not tool_chain:
             from core.command_handler import _parse_tool_chain
             tool_chain = _parse_tool_chain(raw)

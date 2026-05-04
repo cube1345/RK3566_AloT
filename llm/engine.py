@@ -5,7 +5,7 @@ import time
 from typing import Any
 from pathlib import Path
 
-from config import LLM_CTX_SIZE, LLM_MAX_TOKENS, LLM_TEMPERATURE
+from config import LLM_CTX_SIZE, LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_N_THREADS, LLM_N_BATCH
 
 logger = logging.getLogger("llm")
 
@@ -52,6 +52,8 @@ class LLMEngine:
                 n_ctx=LLM_CTX_SIZE,
                 max_tokens=LLM_MAX_TOKENS,
                 temperature=LLM_TEMPERATURE,
+                n_threads=LLM_N_THREADS,
+                n_batch=LLM_N_BATCH,
             )
             self._loaded = True
             self._backend_name = "llamacpp"

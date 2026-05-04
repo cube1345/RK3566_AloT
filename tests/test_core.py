@@ -1095,17 +1095,29 @@ class TestAIBrain:
     def test_parse_decision_output_valid(self):
         from core.ai_brain import AIBrain
         brain = AIBrain()
-        raw = "EXPLANATION: 温度过高。\nTOOLS: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26}}]"
+        # CoT新格式
+        raw = "观察: 温度30°C偏高\n分析: 温度过高。\n决策: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26}}]"
         result = brain._parse_decision_output(raw)
         assert result["type"] == "action"
         assert result["explanation"] == "温度过高。"
         assert len(result["tool_chain"]) == 1
         assert result["tool_chain"][0]["tool"] == "ac_control"
 
+    def test_parse_decision_output_old_format(self):
+        from core.ai_brain import AIBrain
+        brain = AIBrain()
+        # 向后兼容旧格式 EXPLANATION/TOOLS
+        raw = "EXPLANATION: 温度过高。\nTOOLS: [{\"tool\":\"ac_control\",\"params\":{\"mode\":\"cool\",\"temp\":26}}]"
+        result = brain._parse_decision_output(raw)
+        assert result["type"] == "action"
+        assert result["explanation"] == "温度过高。"
+        assert len(result["tool_chain"]) == 1
+
     def test_parse_decision_output_no_tools(self):
         from core.ai_brain import AIBrain
         brain = AIBrain()
-        raw = "EXPLANATION: 传感器正常,无需操作。\nTOOLS: []"
+        # CoT新格式无操作
+        raw = "观察: 温度25°C正常\n分析: 传感器正常,无需操作。\n决策: []"
         result = brain._parse_decision_output(raw)
         assert result["type"] == "none"
 

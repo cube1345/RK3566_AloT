@@ -89,6 +89,7 @@ class AgentOrchestrator:
             db=self.db,
             sensors=self.sensors,
         )
+        self._cmd_handler.set_profile_engine(self.profile_engine)
 
         # 7. 启动 Web Dashboard
         self._start_web()

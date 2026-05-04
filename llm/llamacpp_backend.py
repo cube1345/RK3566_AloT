@@ -9,11 +9,14 @@ logger = logging.getLogger("llm.llamacpp")
 
 class LlamaCppBackend:
     def __init__(self, model_path: str, n_ctx: int = 4096,
-                 max_tokens: int = 512, temperature: float = 0.7):
+                 max_tokens: int = 512, temperature: float = 0.7,
+                 n_threads: int = 4, n_batch: int = 512):
         self.model_path = model_path
         self.n_ctx = n_ctx
         self.max_tokens = max_tokens
         self.temperature = temperature
+        self.n_threads = n_threads
+        self.n_batch = n_batch
         self._model = None
         self._load()
 
@@ -25,11 +28,13 @@ class LlamaCppBackend:
     def _load(self):
         from llama_cpp import Llama
         path = str(Path(self.model_path).resolve())
-        logger.info("加载模型: %s (ctx=%d)", path, self.n_ctx)
+        logger.info("加载模型: %s (ctx=%d, threads=%d, batch=%d)",
+                    path, self.n_ctx, self.n_threads, self.n_batch)
         self._model = Llama(
             model_path=path,
             n_ctx=self.n_ctx,
-            n_threads=2,
+            n_threads=self.n_threads,
+            n_batch=self.n_batch,
             verbose=False,
         )
         logger.info("模型加载完成")

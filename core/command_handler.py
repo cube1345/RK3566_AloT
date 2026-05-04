@@ -96,10 +96,14 @@ class CommandHandler:
         self._scene_engine = SceneEngine(llm=llm)
         self._context = ContextManager()
         self._pending_clarification: tuple | None = None  # (orig_text, question, agent)
+        self._profile_engine = None  # 延迟初始化, 避免重复创建
 
     def set_llm(self, llm):
         self._llm = llm
         self._scene_engine._llm = llm
+
+    def set_profile_engine(self, pe):
+        self._profile_engine = pe
 
     def handle(self, text: str, history: list[dict] | None = None) -> dict:
         # 对话超时检查
@@ -229,13 +233,15 @@ class CommandHandler:
 
     def _build_system_prompt(self, agent_name: str, agent_role: str, tool_block: str) -> str:
         """构建CoT结构化的system prompt"""
-        # 用户画像上下文
+        # 用户画像上下文 (使用缓存的实例)
         persona = ""
-        if self._db:
+        if self._profile_engine:
+            persona = self._profile_engine.get_persona_context()
+        elif self._db:
             try:
                 from core.profile_engine import ProfileEngine
-                pe = ProfileEngine(self._db)
-                persona = pe.get_persona_context()
+                self._profile_engine = ProfileEngine(self._db)
+                persona = self._profile_engine.get_persona_context()
             except Exception:
                 pass
 
