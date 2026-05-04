@@ -71,6 +71,17 @@ class LLMEngine:
             logger.error("LLM 推理失败: %s", e)
             return ""
 
+    def generate_stream(self, prompt: str, system: str = ""):
+        """流式生成, yield token块"""
+        if not self._loaded:
+            yield ""
+            return
+        try:
+            yield from self._backend.generate_stream(prompt, system)
+        except Exception as e:
+            logger.error("流式生成失败: %s", e)
+            yield ""
+
     def generate_structured(self, prompt: str, system: str = "") -> list[dict]:
         """生成结构化工具调用链"""
         raw = self.generate(prompt, system)

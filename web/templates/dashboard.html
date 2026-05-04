@@ -253,66 +253,199 @@ function sendText(text) {
   userMsg.innerHTML = `<div class="avatar">👤</div><div class="bubble">${escapeHtml(text)}</div>`;
   chat.appendChild(userMsg);
 
-  // AI thinking placeholder
+  // AI response placeholder
   const thinkMsg = document.createElement('div');
   thinkMsg.className = 'msg agent';
-  thinkMsg.id = 'thinkMsg-' + Date.now();
+  const msgId = 'thinkMsg-' + Date.now();
+  thinkMsg.id = msgId;
   thinkMsg.innerHTML = `<div class="avatar">🧠</div>
     <div class="bubble">
-      <div class="thinking"><div class="dots"><span></span><span></span><span></span></div>思考中...</div>
+      <div class="thinking" id="${msgId}-thinking"><div class="dots"><span></span><span></span><span></span></div>思考中...</div>
+      <div id="${msgId}-content" style="display:none;"></div>
     </div>`;
   chat.appendChild(thinkMsg);
   chat.scrollTop = chat.scrollHeight;
 
-  // Fetch SSE stream
+  // State for this message
+  let tokenBuffer = '';
+  let phaseCards = {observe: null, analyze: null, decide: null, question: null};
+  let currentPhase = null;
+  let contextText = '';
+
   fetch('/api/command/stream', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({text}),
   }).then(async resp => {
-    if (!resp.ok || resp.headers.get('content-type')?.includes('application/json')) {
-      // Non-streaming fallback
-      const data = await resp.json();
-      renderResult(thinkMsg, data);
-      return;
-    }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
-    let phases = {};
+    let buf = '';
 
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, {stream: true});
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         try {
           const data = JSON.parse(line.slice(6));
-          if (data.phase === 'done') {
-            renderResult(thinkMsg, data);
-          } else {
-            phases[data.phase] = data;
-            renderPhases(thinkMsg, phases);
-          }
-        } catch(e) {}
+          handleStreamEvent(thinkMsg, data, msgId, {tokenBuffer, phaseCards, currentPhase, contextText}, (s) => { tokenBuffer = s.tokenBuffer; phaseCards = s.phaseCards; currentPhase = s.currentPhase; contextText = s.contextText; });
+        } catch(e) { console.error('parse err', e); }
       }
     }
-    if (buffer.startsWith('data: ')) {
-      try {
-        const data = JSON.parse(buffer.slice(6));
-        if (data.phase === 'done') renderResult(thinkMsg, data);
-      } catch(e) {}
-    }
-    isProcessing = false;
-    $('sendBtn').disabled = false;
-    loadEvents();
-  }).catch(() => {
-    isProcessing = false;
-    $('sendBtn').disabled = false;
+  }).catch(e => {
+    console.error('stream err', e);
+    finishProcessing(thinkMsg, msgId, '连接失败，请重试');
   });
+}
+
+function handleStreamEvent(msgEl, data, msgId, state, setState) {
+  const contentDiv = $(msgId + '-content');
+  const thinkingDiv = $(msgId + '-thinking');
+
+  if (data.phase === 'token') {
+    // Hide thinking, show content
+    if (thinkingDiv) thinkingDiv.style.display = 'none';
+    contentDiv.style.display = 'block';
+    state.tokenBuffer += data.text;
+    liveRender(contentDiv, state);
+    msgEl.parentElement.scrollTop = msgEl.parentElement.scrollHeight;
+  } else if (data.phase === 'context') {
+    state.contextText = data.text;
+  } else if (data.phase === 'done') {
+    finishProcessing(msgEl, msgId, data);
+  } else if (['observe', 'analyze', 'decide', 'question'].includes(data.phase)) {
+    // ReAct path: pre-parsed phase
+    if (thinkingDiv) thinkingDiv.style.display = 'none';
+    contentDiv.style.display = 'block';
+    state.phaseCards[data.phase] = data.text;
+    liveRender(contentDiv, state);
+  }
+  setState(state);
+}
+
+function liveRender(container, state) {
+  const text = state.tokenBuffer;
+  const phases = state.phaseCards;
+  const ctx = state.contextText;
+
+  // Detect phases in token buffer
+  const phaseOrder = [
+    {key: '观察', cls: 'observe', icon: '👁️'},
+    {key: '分析', cls: 'analyze', icon: '🧩'},
+    {key: '决策', cls: 'decide', icon: '⚡'},
+    {key: '反问', cls: 'question', icon: '❓'},
+  ];
+
+  // Parse current text for phases
+  let html = '';
+
+  // Context badge
+  if (ctx) {
+    html += `<div style="font-size:10px; color:var(--text3); margin-bottom:6px; padding:4px 8px; background:rgba(59,130,246,0.06); border-radius:4px;">📡 ${escapeHtml(ctx)}</div>`;
+  }
+
+  // Live phase parsing: split text by phase markers
+  let remaining = text;
+  let phaseContents = {};
+
+  for (let i = 0; i < phaseOrder.length; i++) {
+    const current = phaseOrder[i];
+    const next = phaseOrder[i + 1];
+    const re = new RegExp(current.key + '\\s*[:：]\\s*', '');
+    const m = remaining.match(re);
+    if (m) {
+      const startIdx = m.index + m[0].length;
+      let endIdx;
+      if (next) {
+        const nextRe = new RegExp(next.key + '\\s*[:：]\\s*');
+        const nm = remaining.substring(startIdx).match(nextRe);
+        endIdx = nm ? startIdx + nm.index : remaining.length;
+      } else {
+        endIdx = remaining.length;
+      }
+      phaseContents[current.key] = remaining.substring(startIdx, endIdx).trim();
+      if (endIdx < remaining.length) {
+        remaining = remaining.substring(endIdx);
+      } else {
+        remaining = '';
+      }
+    }
+  }
+  // Override with explicitly parsed phases (from ReAct path)
+  for (const p of phaseOrder) {
+    if (phases[p.cls]) phaseContents[p.key] = phases[p.cls];
+  }
+
+  // Phase progress indicator
+  const doneKeys = Object.keys(phaseContents);
+  html += '<div class="phase-progress">';
+  for (const p of phaseOrder) {
+    const status = doneKeys.includes(p.key) ? 'done' : (doneKeys.length && phaseOrder.indexOf(p) <= doneKeys.length ? 'active' : '');
+    html += `<div class="phase-step ${status}"><div class="dot"></div>${p.key}</div>`;
+    if (p.key !== '反问') html += '<div class="line"></div>';
+  }
+  html += '</div>';
+
+  // Phase cards
+  html += '<div class="cot-block"><div class="cot-header open" onclick="toggleCot(this)"><span class="arrow">▶</span> AI 思考链</div><div class="cot-body show">';
+  for (const p of phaseOrder) {
+    if (phaseContents[p.key]) {
+      html += `<div class="cot-phase ${p.cls}"><div class="label">${p.icon} ${p.key}</div><div class="content">${escapeHtml(phaseContents[p.key])}</div></div>`;
+    }
+  }
+  html += '</div></div>';
+
+  // Remaining text that's not part of any phase (pre-phase text)
+  if (!remaining.includes('观察') && !remaining.includes('分析') && !remaining.includes('决策') && !remaining.includes('反问') && remaining.trim() && Object.keys(phaseContents).length === 0) {
+    html += `<div style="white-space:pre-wrap; font-size:13px;">${escapeHtml(remaining)}<span class="typing-cursor"></span></div>`;
+  } else if (Object.keys(phaseContents).length > 0) {
+    html += '<div class="typing-cursor" style="margin-top:4px;"></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function finishProcessing(msgEl, msgId, data) {
+  const contentDiv = $(msgId + '-content');
+  const thinkingDiv = $(msgId + '-thinking');
+  if (thinkingDiv) thinkingDiv.style.display = 'none';
+  contentDiv.style.display = 'block';
+
+  let html = contentDiv.innerHTML;
+  // Remove cursor
+  html = html.replace(/<div class="typing-cursor"[^>]*><\/div>/g, '');
+
+  // Add tool results
+  if (data.actions && data.actions.length) {
+    html += '<div style="margin-top:8px;">';
+    for (const a of data.actions) {
+      const result = a.result ? String(a.result).slice(0, 80) : 'ok';
+      html += `<div class="tool-result">✓ <code>${escapeHtml(a.tool)}</code> → ${escapeHtml(result)}</div>`;
+    }
+    html += '</div>';
+  }
+
+  // Add final reply if it differs from CoT analysis
+  if (data.reply && !html.includes(escapeHtml(data.reply).substring(0, 20))) {
+    html += `<div style="margin-top:8px; white-space:pre-wrap; font-size:13px; color:var(--text);">${escapeHtml(data.reply)}</div>`;
+  }
+
+  // Options
+  if (data.options && data.options.length) {
+    html += '<div class="options-row">';
+    for (const opt of data.options) {
+      html += `<span class="option-btn" onclick="sendText('${escapeAttr(opt)}')">${escapeHtml(opt)}</span>`;
+    }
+    html += '</div>';
+  }
+
+  contentDiv.innerHTML = html;
+  msgEl.parentElement.scrollTop = msgEl.parentElement.scrollHeight;
+  isProcessing = false;
+  $('sendBtn').disabled = false;
 }
 
 // ===== Render =====

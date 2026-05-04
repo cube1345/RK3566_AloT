@@ -139,39 +139,15 @@ def api_command():
 
 @app.route("/api/command/stream", methods=["POST"])
 def api_command_stream():
-    """流式指令 — SSE 实时推送 CoT 思考链"""
+    """真流式指令 — LLM token级实时推送到前端"""
     text = request.json.get("text", "")
     if not text or orchestrator is None:
         return jsonify({"reply": "系统未就绪"})
 
     def generate():
-        import re as _re
-        import time as _time
-        result = orchestrator.handle_command(text)
-        raw = result.get("llm_raw", "")
-        reply = result.get("reply", "")
-        actions = result.get("actions", [])
-        agent = result.get("agent", "")
-        options = result.get("clarification", {}).get("options", [])
-
-        # 如果有CoT原始输出, 分阶段推送
-        if raw:
-            sections = {"观察": "observe", "分析": "analyze", "决策": "decide", "反问": "question"}
-            for key, phase in sections.items():
-                m = _re.search(rf'{key}\s*[:：]\s*(.+?)(?:\n|$)', raw)
-                if m:
-                    yield f"data: {json.dumps({'phase': phase, 'text': m.group(1).strip()}, ensure_ascii=False)}\n\n"
-                    _time.sleep(0.25)
-
-        # 最终结果
-        yield f"data: {json.dumps({
-            'phase': 'done',
-            'reply': reply,
-            'actions': [{'tool': a.get('tool', ''), 'result': str(a.get('result', ''))[:100]} for a in actions],
-            'agent': agent,
-            'options': options,
-            'llm_used': result.get('llm_used', bool(raw)),
-        }, ensure_ascii=False)}\n\n"
+        handler = orchestrator._cmd_handler
+        for event in handler.handle_stream(text):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return Response(
         stream_with_context(generate()),

@@ -130,6 +130,129 @@ class CommandHandler:
     def set_profile_engine(self, pe):
         self._profile_engine = pe
 
+    def handle_stream(self, text: str):
+        """流式处理指令 — 边生成token边yield SSE事件"""
+        self._context.prune_if_stale()
+
+        # 检查澄清追问
+        if self._pending_clarification:
+            orig_text, question, agent = self._pending_clarification
+            self._pending_clarification = None
+            combined = f"{orig_text} | 用户补充: {text}"
+            self._context.add_user(combined)
+            yield from self._process_stream(combined, agent)
+            return
+
+        # 场景识别
+        scene = self._scene_engine.recognize(text)
+        if scene:
+            actions = registry.execute_plan(scene["tools"])
+            if self._db:
+                self._db.log_event("scene_trigger", f"{scene['name']}: {text[:80]}")
+                for a in actions:
+                    self._db.log_event("tool_exec", f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+                import datetime
+                now = datetime.datetime.now()
+                self._db.log_behavior("scene_trigger", text[:200], agent="scene", hour=now.hour, day=now.weekday())
+            self._context.add_user(text)
+            self._context.add_assistant(scene["reply"], action=scene["name"])
+            yield {"phase": "done", "reply": scene["reply"], "actions": [{"tool": a.get("tool", ""), "result": str(a.get("result", ""))[:100]} for a in actions], "agent": "scene", "llm_used": False}
+            return
+
+        # 模糊指令追问
+        ambiguity = _detect_ambiguity(text)
+        if ambiguity:
+            agent_name = route(text)
+            self._pending_clarification = (text, ambiguity["text"], agent_name)
+            self._context.add_user(text)
+            yield {"phase": "done", "reply": f"🤔 {ambiguity['text']}", "actions": [], "agent": agent_name, "llm_used": False, "options": ambiguity.get("options", [])}
+            return
+
+        # 复杂指令走ReAct (暂不流式), 简单指令流式
+        complex_kw = ("为什么", "怎么样", "检查", "分析", "如何", "怎么回事", "怎么办")
+        if len(text) > 15 or any(kw in text for kw in complex_kw):
+            self._context.add_user(text)
+            # ReAct 暂用非流式, 但有CoT展示
+            result = self._react_loop(text)
+            raw = result.get("llm_raw", "")
+            # 流式发送CoT阶段
+            if raw:
+                for key, phase in [("观察", "observe"), ("分析", "analyze"), ("决策", "decide"), ("反问", "question")]:
+                    m = re.search(rf'{key}\s*[:：]\s*(.+?)(?:\n|$)', raw)
+                    if m:
+                        yield {"phase": phase, "text": m.group(1).strip()}
+                        import time as _time
+                        _time.sleep(0.2)
+            yield {"phase": "done", "reply": result["reply"], "actions": [{"tool": a.get("tool", ""), "result": str(a.get("result", ""))[:100]} for a in result.get("actions", [])], "agent": result["agent"], "llm_used": result.get("llm_used", False)}
+            return
+
+        agent_name = route(text)
+        self._context.add_user(text)
+        yield from self._process_stream(text, agent_name)
+
+    def _process_stream(self, text: str, agent_name: str):
+        """流式处理: LLM token → yield → 解析 → 执行 → done"""
+        agent_role = _AGENT_MAP[agent_name]
+        tool_block = registry.get_prompt_block()
+        context = self._build_context()
+        system_prompt = self._build_system_prompt(agent_name, agent_role, tool_block)
+        user_prompt = f"当前环境: {context}\n\n用户指令: {text}"
+
+        if not self._llm or not self._llm.is_loaded:
+            yield {"phase": "done", "reply": "LLM 未加载", "actions": [], "agent": agent_name, "llm_used": False}
+            return
+
+        # 发送上下文供前端显示
+        yield {"phase": "context", "text": context}
+
+        # 真正的token级流式生成
+        full_text = ""
+        try:
+            for token in self._llm.generate_stream(user_prompt, system=system_prompt):
+                if token:
+                    full_text += token
+                    yield {"phase": "token", "text": token}
+        except Exception as e:
+            logger.warning("流式生成失败: %s", e)
+
+        if not full_text:
+            yield {"phase": "done", "reply": "LLM 无响应", "actions": [], "agent": agent_name, "llm_used": False}
+            return
+
+        logger.info("LLM stream: %.200s", full_text)
+
+        # 解析工具链
+        tool_chain = _parse_tool_chain(full_text)
+        if not isinstance(tool_chain, list):
+            tool_chain = []
+        if not tool_chain:
+            food_chain = _try_food_regex(text)
+            if food_chain:
+                tool_chain = food_chain
+
+        # 执行工具
+        actions = []
+        if tool_chain:
+            try:
+                actions = registry.execute_plan(tool_chain)
+                logger.info("executed %d tools", len(actions))
+            except Exception as e:
+                logger.warning("tool exec failed: %s", e)
+
+        # 构建回复
+        reply = self._build_reply(agent_name, actions, text, True, full_text)
+
+        if self._db:
+            self._db.log_event("user_command", f"[{agent_name}] {text[:100]}")
+            for a in actions:
+                self._db.log_event("tool_exec", f"{a.get('tool')}: {str(a.get('result', ''))[:80]}")
+            import datetime
+            now = datetime.datetime.now()
+            self._db.log_behavior("command", text[:200], agent=agent_name, hour=now.hour, day=now.weekday())
+
+        self._context.add_assistant(reply, action=agent_name)
+        yield {"phase": "done", "reply": reply, "actions": [{"tool": a.get("tool", ""), "result": str(a.get("result", ""))[:100]} for a in actions], "agent": agent_name, "llm_used": True}
+
     def handle(self, text: str, history: list[dict] | None = None) -> dict:
         # 对话超时检查
         self._context.prune_if_stale()
