@@ -389,78 +389,71 @@ class AgentOrchestrator:
                 self.db.log_event("doorbell", "外卖按键触发")
             return
 
-        # 真实 GPIO 模式 (gpiod v2/v1/sysfs 三档降级)
+        # 真实 GPIO 模式 — 轮询电平变化 (gpiod v2 > v1 > sysfs)
         import os
-        from datetime import timedelta
 
         _DEBOUNCE_S = 2.0
         _POLL_INTERVAL = 0.1
         last_trigger = 0.0
+        prev_val = None
 
         # 检测可用 GPIO 库
-        gpiod_v2 = False
-        gpiod_v1 = False
+        _gpiod_v2 = False
+        _gpiod_v1 = False
         try:
             import gpiod
             if hasattr(gpiod, "LineSettings"):
-                from gpiod.line import Direction, Edge
-                gpiod_v2 = True
+                from gpiod.line import Direction, Value
+                _gpiod_v2 = True
             else:
-                gpiod_v1 = True
+                _gpiod_v1 = True
         except ImportError:
             pass
 
-        request = None
-        line = None
-        sysfs_path = None
+        _request = None
+        _line = None
+        _sysfs_path = None
 
-        try:
-            # --- gpiod v2 (Pi 5 / gpiod >= 2.0) ---
-            if gpiod_v2:
+        def _read_pin():
+            """读取 GPIO 电平, 返回 0/1 或 None"""
+            nonlocal _request, _line, _sysfs_path
+            # gpiod v2
+            if _gpiod_v2 and _request:
+                try:
+                    val = _request.get_value(pin)
+                    return 1 if val == Value.ACTIVE else 0
+                except Exception:
+                    _request = None
+            if _gpiod_v2 and _request is None:
                 try:
                     chip = gpiod.Chip(GPIO_CHIP)
-                    request = chip.request_lines(
+                    _request = chip.request_lines(
                         consumer="doorbell",
-                        config={pin: gpiod.LineSettings(
-                            direction=Direction.INPUT,
-                            edge_detection=Edge.BOTH,
-                        )},
+                        config={pin: gpiod.LineSettings(direction=Direction.INPUT)},
                     )
                     logger.info("门铃 GPIO (gpiod v2): %s pin %d", GPIO_CHIP, pin)
-                    while self._running:
-                        if request.wait_edge_events(timedelta(seconds=1)):
-                            for ev in request.read_edge_events():
-                                now = time.time()
-                                if now - last_trigger > _DEBOUNCE_S:
-                                    last_trigger = now
-                                    self._doorbell_trigger()
-                        await asyncio.sleep(0)
+                    return _read_pin()
                 except Exception as e:
-                    logger.warning("gpiod v2 门铃失败: %s", e)
-                    request = None
-
-            # --- gpiod v1 (旧版 Pi / gpiod < 2.0) ---
-            if not request and gpiod_v1:
+                    logger.warning("gpiod v2 门铃初始化失败: %s", e)
+                    _gpiod_v2 = False
+            # gpiod v1
+            if _gpiod_v1 and _line:
+                try:
+                    return _line.get_value()
+                except Exception:
+                    _line = None
+            if _gpiod_v1 and _line is None:
                 try:
                     chip = gpiod.Chip(GPIO_CHIP)
-                    line = chip.get_line(pin)
-                    line.request(consumer="doorbell", type=gpiod.LINE_REQ_EV_BOTH_EDGES)
+                    _line = chip.get_line(pin)
+                    _line.request(consumer="doorbell", type=gpiod.LINE_REQ_DIR_IN)
                     logger.info("门铃 GPIO (gpiod v1): %s pin %d", GPIO_CHIP, pin)
-                    while self._running:
-                        if line.event_wait(nsec=int(1e9)):
-                            event = line.event_read()
-                            if event.type in (gpiod.LineEvent.FALLING_EDGE, gpiod.LineEvent.RISING_EDGE):
-                                now = time.time()
-                                if now - last_trigger > _DEBOUNCE_S:
-                                    last_trigger = now
-                                    self._doorbell_trigger()
-                        await asyncio.sleep(0)
+                    return _read_pin()
                 except Exception as e:
-                    logger.debug("gpiod v1 门铃失败: %s", e)
-                    line = None
-
-            # --- sysfs fallback (无 gpiod) ---
-            if not request and not line:
+                    logger.warning("gpiod v1 门铃初始化失败: %s", e)
+                    _gpiod_v1 = False
+            # sysfs
+            if not _sysfs_path:
                 gpio_dir = f"/sys/class/gpio/gpio{pin}"
                 if not os.path.exists(gpio_dir):
                     try:
@@ -475,36 +468,34 @@ class AgentOrchestrator:
                 if os.path.exists(gpio_dir):
                     with open(f"{gpio_dir}/direction", "w") as f:
                         f.write("in")
-                    with open(f"{gpio_dir}/edge", "w") as f:
-                        f.write("both")
-                    sysfs_path = f"{gpio_dir}/value"
+                    _sysfs_path = f"{gpio_dir}/value"
                     logger.info("门铃 GPIO (sysfs): pin %d", pin)
-                    prev_val = "1"
-                    while self._running:
-                        try:
-                            with open(sysfs_path) as f:
-                                val = f.read().strip()
-                            if val != prev_val:
-                                now = time.time()
-                                if now - last_trigger > _DEBOUNCE_S:
-                                    last_trigger = now
-                                    self._doorbell_trigger()
-                            prev_val = val
-                        except OSError:
-                            pass
-                        await asyncio.sleep(_POLL_INTERVAL)
-
-        finally:
-            if request:
-                request = None
-            if line:
-                line = None
-            if sysfs_path:
+            if _sysfs_path:
                 try:
-                    with open("/sys/class/gpio/unexport", "w") as f:
-                        f.write(str(pin))
-                except Exception:
+                    with open(_sysfs_path) as f:
+                        return int(f.read().strip())
+                except OSError:
                     pass
+            return None
+
+        while self._running:
+            val = _read_pin()
+            if val is not None and prev_val is not None and val != prev_val:
+                now = time.time()
+                if now - last_trigger > _DEBOUNCE_S:
+                    last_trigger = now
+                    self._doorbell_trigger()
+            if val is not None:
+                prev_val = val
+            await asyncio.sleep(_POLL_INTERVAL)
+
+        # cleanup
+        if _sysfs_path:
+            try:
+                with open("/sys/class/gpio/unexport", "w") as f:
+                    f.write(str(pin))
+            except Exception:
+                pass
 
     def _doorbell_trigger(self):
         """门铃触发动作"""
