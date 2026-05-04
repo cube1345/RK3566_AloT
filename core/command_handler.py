@@ -139,6 +139,7 @@ class CommandHandler:
                 "actions": actions,
                 "agent": "scene",
                 "llm_used": False,
+                "llm_raw": "",
             }
 
         # 模糊指令检测 → 追问用户
@@ -153,6 +154,7 @@ class CommandHandler:
                 "actions": [],
                 "agent": agent_name,
                 "llm_used": False,
+                "llm_raw": "",
                 "clarification": ambiguity,
             }
 
@@ -229,6 +231,7 @@ class CommandHandler:
             "actions": actions,
             "agent": agent_name,
             "llm_used": llm_used,
+            "llm_raw": raw,
         }
 
     def _build_system_prompt(self, agent_name: str, agent_role: str, tool_block: str) -> str:
@@ -371,6 +374,7 @@ class CommandHandler:
             "actions": all_actions,
             "agent": agent_name,
             "llm_used": llm_used,
+            "llm_raw": raw if llm_used else "",
             "iterations": iteration + 1,
         }
 

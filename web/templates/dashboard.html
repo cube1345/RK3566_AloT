@@ -4,431 +4,509 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent ZX 智能家居总控</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
+:root {
+  --bg: #0a0a0f;
+  --surface: #13131a;
+  --surface2: #1a1a24;
+  --border: #252530;
+  --text: #e4e4ec;
+  --text2: #9494a4;
+  --text3: #646476;
+  --accent: #6c8cff;
+  --accent2: #a78bfa;
+  --green: #34d399;
+  --orange: #fb923c;
+  --red: #f87171;
+  --cyan: #22d3ee;
+  --phase-observe: #3b82f6;
+  --phase-analyze: #a78bfa;
+  --phase-decide: #34d399;
+  --phase-question: #fb923c;
+  --radius: 10px;
+  --font: -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
-.header { background: #1e293b; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #334155; }
-.header h1 { font-size: 20px; font-weight: 600; }
-.header .badge { background: #059669; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 20px; align-items: stretch; }
-.card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; min-height: 130px; display: flex; flex-direction: column; }
-.card .label { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0; }
-.card .value { font-size: 32px; font-weight: 700; margin: 8px 0; min-height: 42px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.card .unit { font-size: 14px; color: #94a3b8; flex-shrink: 0; }
-.status-ok { background: #065f46; color: #6ee7b7; }
-.status-warn { background: #78350f; color: #fcd34d; }
-.status-critical { background: #7f1d1d; color: #fca5a5; }
-.status { display: inline-block; padding: 2px 10px; border-radius: 8px; font-size: 12px; white-space: nowrap; }
-.icon-fixed { display: inline-block; width: 28px; text-align: center; font-size: 24px; }
-.chart-container { padding: 0 20px 20px; }
-.chart-card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; margin-bottom: 16px; height: 200px; display: flex; flex-direction: column; overflow: hidden; }
-.chart-card canvas { display: block; width: 100%; height: 140px !important; max-height: 240px; }
-.chart-card h3 { margin-bottom: 12px; font-size: 14px; color: #94a3b8; flex-shrink: 0; }
-.control-group { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; transition: .2s; }
-.btn-primary { background: #3b82f6; color: #fff; }
-.btn-primary:hover { background: #2563eb; }
-.btn-danger { background: #ef4444; color: #fff; }
-.btn-success { background: #059669; color: #fff; }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.events { max-height: 300px; overflow-y: auto; }
-.event-item { padding: 8px 0; border-bottom: 1px solid #334155; font-size: 13px; display: flex; justify-content: space-between; }
-.event-time { color: #64748b; font-size: 11px; font-family: monospace; }
-.tab-bar { display: flex; gap: 4px; padding: 0 20px; }
-.tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: #94a3b8; font-size: 13px; }
-.tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
-.panel { display: none; }
-.panel.active { display: block; }
-input, select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; padding: 8px 12px; border-radius: 8px; font-size: 14px; width: 100%; margin: 4px 0; }
-.food-table { width: 100%; border-collapse: collapse; }
-.food-table th, .food-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #334155; font-size: 13px; }
-.food-table th { color: #94a3b8; font-weight: 500; }
-.expiring { color: #fcd34d; } .expired { color: #ef4444; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; }
+
+/* Layout */
+.app { display: flex; height: 100vh; }
+.sidebar { width: 320px; min-width: 320px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow-y: auto; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+/* Header */
+.header { padding: 14px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 16px; font-weight: 600; }
+.badge { background: var(--green); color: #000; padding: 3px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+
+/* Sidebar sensor cards */
+.sidebar-section { padding: 12px 16px; }
+.sidebar-section h3 { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+.sensor-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: var(--surface2); border-radius: 6px; margin-bottom: 6px; }
+.sensor-row .name { font-size: 12px; color: var(--text2); }
+.sensor-row .val { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sensor-row .unit { font-size: 10px; color: var(--text3); margin-left: 2px; }
+
+.device-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface2); border-radius: 6px; margin-bottom: 4px; font-size: 12px; }
+.device-row .icon { width: 20px; text-align: center; }
+.device-row .state { margin-left: auto; color: var(--text3); font-size: 11px; }
+
+.status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.status-dot.ok { background: var(--green); }
+.status-dot.warn { background: var(--orange); }
+.status-dot.bad { background: var(--red); }
+
+/* Main chat area */
+.chat-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+.chat-empty { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--text3); font-size: 14px; flex-direction: column; gap: 8px; }
+
+/* Message bubbles */
+.msg { display: flex; gap: 10px; max-width: 85%; animation: fadeIn 0.2s ease; }
+.msg.user { align-self: flex-end; flex-direction: row-reverse; }
+.msg.agent { align-self: flex-start; }
+.msg .avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+.msg.user .avatar { background: var(--accent); }
+.msg.agent .avatar { background: var(--accent2); }
+.msg .bubble { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.55; }
+.msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.msg.agent .bubble { background: var(--surface2); color: var(--text); border-bottom-left-radius: 4px; border: 1px solid var(--border); }
+
+/* CoT thinking chain */
+.cot-block { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin: 8px 0; overflow: hidden; }
+.cot-header { padding: 8px 12px; font-size: 11px; color: var(--text3); cursor: pointer; display: flex; align-items: center; gap: 6px; user-select: none; }
+.cot-header:hover { color: var(--text2); }
+.cot-header .arrow { transition: transform 0.2s; font-size: 10px; }
+.cot-header.open .arrow { transform: rotate(90deg); }
+.cot-body { display: none; padding: 0 12px 12px; }
+.cot-body.show { display: block; }
+.cot-phase { margin-top: 10px; padding: 8px 10px; border-radius: 6px; border-left: 3px solid; font-size: 12px; line-height: 1.5; }
+.cot-phase.observe { border-color: var(--phase-observe); background: rgba(59,130,246,0.08); }
+.cot-phase.analyze { border-color: var(--phase-analyze); background: rgba(167,139,250,0.08); }
+.cot-phase.decide { border-color: var(--phase-decide); background: rgba(52,211,153,0.08); }
+.cot-phase.question { border-color: var(--phase-question); background: rgba(251,146,60,0.08); }
+.cot-phase .label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.cot-phase.observe .label { color: var(--phase-observe); }
+.cot-phase.analyze .label { color: var(--phase-analyze); }
+.cot-phase.decide .label { color: var(--phase-decide); }
+.cot-phase.question .label { color: var(--phase-question); }
+.cot-phase .content { color: var(--text); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+
+/* Typewriter cursor */
+.typing-cursor::after { content: '▊'; animation: blink 1s step-end infinite; color: var(--accent); }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Phase progress indicator */
+.phase-progress { display: flex; gap: 4px; align-items: center; padding: 6px 0; }
+.phase-step { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text3); transition: color 0.3s; }
+.phase-step .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); transition: all 0.3s; }
+.phase-step.active { color: var(--text2); }
+.phase-step.active .dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.phase-step.done { color: var(--text2); }
+.phase-step.done .dot { background: var(--green); }
+.phase-step .line { width: 10px; height: 1px; background: var(--border); }
+
+/* Tool execution result */
+.tool-result { font-size: 11px; color: var(--text3); padding: 4px 8px; background: rgba(52,211,153,0.06); border-radius: 4px; margin-top: 4px; border-left: 2px solid var(--green); }
+.tool-result code { font-size: 11px; color: var(--green); }
+
+/* Input area */
+.input-bar { padding: 12px 20px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 8px; }
+.input-bar input { flex: 1; background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 13px; outline: none; font-family: var(--font); }
+.input-bar input:focus { border-color: var(--accent); }
+.input-bar button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; transition: .2s; }
+.btn-send { background: var(--accent); color: #fff; }
+.btn-send:hover { opacity: 0.9; }
+.btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Options row */
+.options-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.option-btn { padding: 5px 12px; border-radius: 14px; font-size: 11px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); cursor: pointer; transition: .2s; }
+.option-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Status section */
+.status-section { margin-top: auto; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text3); }
+.status-section .kv { display: flex; justify-content: space-between; padding: 2px 0; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .app { flex-direction: column; }
+  .sidebar { width: 100%; min-width: 0; max-height: 200px; flex-shrink: 0; }
+  .sidebar .sensor-row, .sidebar .device-row { display: inline-flex; margin-right: 6px; }
+  .sidebar-section { padding: 8px 12px; }
+  .msg { max-width: 95%; }
+}
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Thinking spinner */
+.thinking { display: flex; align-items: center; gap: 8px; padding: 12px; color: var(--text3); font-size: 12px; }
+.thinking .dots { display: flex; gap: 3px; }
+.thinking .dots span { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: bounce 1.4s ease-in-out infinite both; }
+.thinking .dots span:nth-child(1) { animation-delay: -0.32s; }
+.thinking .dots span:nth-child(2) { animation-delay: -0.16s; }
+@keyframes bounce { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+
+/* Quick commands */
+.quick-cmds { padding: 0 20px 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+.quick-cmd { padding: 4px 10px; border-radius: 12px; font-size: 11px; background: var(--surface2); border: 1px solid var(--border); color: var(--text2); cursor: pointer; transition: .2s; white-space: nowrap; }
+.quick-cmd:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
 
-<div class="header">
-  <h1>🏠 Agent ZX</h1>
-  <div>
-    <span class="badge" id="statusBadge">运行中</span>
-  </div>
-</div>
-
-<!-- 概览卡片 -->
-<div class="grid" id="sensorGrid">
-  <div class="card"><div class="label">CO₂</div><div class="value" id="co2">--</div><div class="unit">ppm</div><div id="co2Status"></div></div>
-  <div class="card"><div class="label">温度</div><div class="value" id="temp">--</div><div class="unit">°C</div></div>
-  <div class="card"><div class="label">湿度</div><div class="value" id="humid">--</div><div class="unit">%</div></div>
-  <div class="card"><div class="label">光照</div><div class="value" id="light">--</div><div class="unit">lux</div></div>
-  <div class="card"><div class="label">人体</div><div class="value" id="motion" style="font-size:32px; font-weight:700; margin:8px 0; min-height:42px; width:32px; text-align:center;">--</div><div class="unit" id="motionLabel"></div></div>
-  <div class="card">
-    <div class="label">设备状态</div>
-    <div style="margin-top:12px; flex:1; display:flex; flex-direction:column; justify-content:center;">
-      <div style="line-height:2">💡 灯: <span id="devLight">--</span></div>
-      <div style="line-height:2">🌀 风扇: <span id="devFan">--</span></div>
-      <div style="line-height:2">❄️ 空调: <span id="devAc">--</span></div>
-      <div style="line-height:2">🌬️ 净化: <span id="devPurifier">--</span></div>
+<div class="app">
+  <!-- 左侧面板 -->
+  <div class="sidebar">
+    <div class="header">
+      <h1>🏠 Agent ZX</h1>
+      <span class="badge" id="statusBadge">运行中</span>
     </div>
-  </div>
-</div>
 
-<!-- 选项卡 -->
-<div class="tab-bar">
-  <div class="tab active" onclick="switchTab('env')">📊 环境曲线</div>
-  <div class="tab" onclick="switchTab('food')">🥘 食材管理</div>
-  <div class="tab" onclick="switchTab('events')">📋 事件日志</div>
-  <div class="tab" onclick="switchTab('command')">🎯 指令</div>
-  <div class="tab" onclick="switchTab('profile')">👤 用户画像</div>
-</div>
-
-<!-- 环境曲线 -->
-<div class="panel active" id="panelEnv">
-  <div class="chart-container">
-    <div class="chart-card"><h3>CO₂ (ppm)</h3><canvas id="chartCo2"></canvas></div>
-    <div class="chart-card"><h3>温度 / 湿度</h3><canvas id="chartTemp"></canvas></div>
-  </div>
-</div>
-
-<!-- 食材管理 -->
-<div class="panel" id="panelFood">
-  <div class="chart-container">
-    <div class="chart-card">
-      <h3>新增食材</h3>
-      <div style="display:grid; grid-template-columns: 2fr 1fr 1fr 1fr auto; gap: 8px; align-items: end;">
-        <input id="foodName" placeholder="食材名称">
-        <input id="foodExpiry" type="date">
-        <select id="foodStorage"><option>冷藏</option><option>冷冻</option><option>常温</option></select>
-        <input id="foodQty" type="number" value="1" min="1">
-        <button class="btn btn-success" onclick="addFood()">添加</button>
+    <div class="sidebar-section">
+      <h3>📡 传感器</h3>
+      <div id="sensorList">
+        <div class="sensor-row"><span class="name">CO₂</span><span><span class="val" id="co2Val">--</span><span class="unit">ppm</span></span></div>
+        <div class="sensor-row"><span class="name">温度</span><span><span class="val" id="tempVal">--</span><span class="unit">°C</span></span></div>
+        <div class="sensor-row"><span class="name">湿度</span><span><span class="val" id="humidVal">--</span><span class="unit">%</span></span></div>
+        <div class="sensor-row"><span class="name">光照</span><span><span class="val" id="lightVal">--</span><span class="unit">lux</span></span></div>
+        <div class="sensor-row"><span class="name">人体</span><span><span class="val" id="motionVal">--</span></span></div>
       </div>
     </div>
-    <div class="chart-card">
-      <table class="food-table">
-        <thead><tr><th>名称</th><th>数量</th><th>位置</th><th>到期</th><th>操作</th></tr></thead>
-        <tbody id="foodTable"></tbody>
-      </table>
-      <button class="btn btn-sm btn-primary" style="margin-top:8px" onclick="loadFoods()">刷新</button>
-      <button class="btn btn-sm" style="margin-left:4px; margin-top:8px" onclick="loadFoods(3)">即将过期</button>
-    </div>
-  </div>
-</div>
 
-<!-- 事件日志 -->
-<div class="panel" id="panelEvents">
-  <div class="chart-container">
-    <div class="chart-card">
-      <div class="events" id="eventList"></div>
-    </div>
-  </div>
-</div>
-
-<!-- 指令 -->
-<div class="panel" id="panelCommand">
-  <div class="chart-container">
-    <div class="chart-card">
-      <div style="display:flex; gap:8px;">
-        <input id="cmdInput" placeholder="输入指令..." onkeydown="if(event.key==='Enter') sendCommand()">
-        <button class="btn btn-primary" onclick="sendCommand()">发送</button>
-      </div>
-      <div id="cmdReply" style="margin-top:12px; padding:12px; background:#0f172a; border-radius:8px; min-height:60px;"></div>
-      <div id="questionBox" style="margin-top:12px; padding:12px; background:#78350f; border-radius:8px; display:none;">
-        <div style="color:#fcd34d; margin-bottom:8px;"><span id="questionIcon">🤔</span> <span id="questionText"></span></div>
-        <div id="questionActions"></div>
+    <div class="sidebar-section">
+      <h3>🔧 设备</h3>
+      <div id="deviceList">
+        <div class="device-row"><span class="icon">💡</span>灯<span class="state" id="devLight">--</span></div>
+        <div class="device-row"><span class="icon">🌀</span>风扇<span class="state" id="devFan">--</span></div>
+        <div class="device-row"><span class="icon">❄️</span>空调<span class="state" id="devAc">--</span></div>
+        <div class="device-row"><span class="icon">🌬️</span>净化<span class="state" id="devPurifier">--</span></div>
       </div>
     </div>
-  </div>
-</div>
 
-<!-- 用户画像 -->
-<div class="panel" id="panelProfile">
-  <div class="chart-container">
-    <div class="chart-card">
-      <h3>用户画像维度</h3>
-      <div id="profileCards" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:8px; margin-top:8px;"></div>
+    <div class="sidebar-section" id="quickCmds" style="display:none;">
+      <h3>⚡ 快捷指令</h3>
+      <div class="quick-cmds">
+        <span class="quick-cmd" onclick="sendText('晚安')">🌙 晚安</span>
+        <span class="quick-cmd" onclick="sendText('太热了')">🔥 太热了</span>
+        <span class="quick-cmd" onclick="sendText('太闷了')">💨 太闷了</span>
+        <span class="quick-cmd" onclick="sendText('冰箱里有什么')">🥘 冰箱</span>
+        <span class="quick-cmd" onclick="sendText('家里环境怎么样')">📊 环境</span>
+        <span class="quick-cmd" onclick="sendText('今天穿什么')">👔 穿衣</span>
+      </div>
     </div>
-    <div class="chart-card">
-      <h3>自动发现规律 <button class="btn btn-sm btn-primary" onclick="detectRoutines()">重新发现</button></h3>
-      <table class="food-table">
-        <thead><tr><th>规律名称</th><th>类型</th><th>可信度</th><th>状态</th></tr></thead>
-        <tbody id="routineTable"></tbody>
-      </table>
+
+    <div class="status-section">
+      <div class="kv"><span>LLM</span><span id="sysLlm">--</span></div>
+      <div class="kv"><span>模式</span><span id="sysMode">--</span></div>
+      <div class="kv"><span>工具</span><span id="sysTools">--</span></div>
+    </div>
+  </div>
+
+  <!-- 主对话区 -->
+  <div class="main">
+    <div class="chat-container" id="chatContainer">
+      <div class="chat-empty" id="chatEmpty">
+        <div style="font-size:40px; margin-bottom:8px;">🤖</div>
+        <div>Agent ZX 已就绪，输入指令开始对话</div>
+        <div style="font-size:11px; color:var(--text3);">支持环境控制 / 食材管理 / 生活建议</div>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <input id="cmdInput" type="text" placeholder="输入指令..." onkeydown="if(event.key==='Enter')sendCommand()" autofocus>
+      <button class="btn-send" onclick="sendCommand()" id="sendBtn">发送</button>
     </div>
   </div>
 </div>
 
 <script>
-// ===== Tab 切换 =====
-function switchTab(name) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
-  document.getElementById('panel' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
+// ===== State =====
+let isProcessing = false;
+
+// ===== Helper =====
+function $(id) { return document.getElementById(id); }
+async function fetchJSON(url, opts) { const r = await fetch(url, opts); return r.json(); }
+
+// ===== Send command =====
+async function sendCommand() {
+  if (isProcessing) return;
+  const input = $('cmdInput');
+  const text = input.value.trim();
+  if (!text) return;
+  sendText(text);
+  input.value = '';
 }
 
-// ===== Charts =====
-const ctxCo2 = document.getElementById('chartCo2').getContext('2d');
-const ctxTemp = document.getElementById('chartTemp').getContext('2d');
+function sendText(text) {
+  if (isProcessing) return;
+  isProcessing = true;
+  $('sendBtn').disabled = true;
+  const chat = $('chatContainer');
+  const empty = $('chatEmpty');
+  if (empty) empty.style.display = 'none';
 
-const chartCo2 = new Chart(ctxCo2, {
-  type: 'line', data: { labels: [], datasets: [{
-    label: 'CO₂', data: [], borderColor: '#3b82f6', tension: 0.3, fill: false, pointRadius: 1,
-  }]},
-  options: { responsive: true, maintainAspectRatio: false, animation: false,
-    scales: { x: { ticks: { color: '#64748b', maxTicksLimit: 6 } }, y: { ticks: { color: '#64748b' } } },
-    plugins: { legend: { display: false } } }
-});
+  // User message
+  const userMsg = document.createElement('div');
+  userMsg.className = 'msg user';
+  userMsg.innerHTML = `<div class="avatar">👤</div><div class="bubble">${escapeHtml(text)}</div>`;
+  chat.appendChild(userMsg);
 
-const chartTemp = new Chart(ctxTemp, {
-  type: 'line', data: { labels: [], datasets: [
-    { label: '温度', data: [], borderColor: '#f97316', tension: 0.3, fill: false, pointRadius: 1 },
-    { label: '湿度', data: [], borderColor: '#06b6d4', tension: 0.3, fill: false, pointRadius: 1, yAxisID: 'y1' },
-  ]},
-  options: { responsive: true, maintainAspectRatio: false, animation: false,
-    scales: {
-      x: { ticks: { color: '#64748b', maxTicksLimit: 6 } },
-      y: { ticks: { color: '#64748b' }, position: 'left' },
-      y1: { ticks: { color: '#64748b' }, position: 'right', grid: { drawOnChartArea: false } },
-    },
-    plugins: { legend: { labels: { color: '#94a3b8' } } } }
-});
+  // AI thinking placeholder
+  const thinkMsg = document.createElement('div');
+  thinkMsg.className = 'msg agent';
+  thinkMsg.id = 'thinkMsg-' + Date.now();
+  thinkMsg.innerHTML = `<div class="avatar">🧠</div>
+    <div class="bubble">
+      <div class="thinking"><div class="dots"><span></span><span></span><span></span></div>思考中...</div>
+    </div>`;
+  chat.appendChild(thinkMsg);
+  chat.scrollTop = chat.scrollHeight;
 
-// ===== 数据更新 =====
-async function fetchJSON(url) {
-  const r = await fetch(url); return r.json();
+  // Fetch SSE stream
+  fetch('/api/command/stream', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text}),
+  }).then(async resp => {
+    if (!resp.ok || resp.headers.get('content-type')?.includes('application/json')) {
+      // Non-streaming fallback
+      const data = await resp.json();
+      renderResult(thinkMsg, data);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let phases = {};
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.phase === 'done') {
+            renderResult(thinkMsg, data);
+          } else {
+            phases[data.phase] = data;
+            renderPhases(thinkMsg, phases);
+          }
+        } catch(e) {}
+      }
+    }
+    if (buffer.startsWith('data: ')) {
+      try {
+        const data = JSON.parse(buffer.slice(6));
+        if (data.phase === 'done') renderResult(thinkMsg, data);
+      } catch(e) {}
+    }
+    isProcessing = false;
+    $('sendBtn').disabled = false;
+    loadEvents();
+  }).catch(() => {
+    isProcessing = false;
+    $('sendBtn').disabled = false;
+  });
 }
 
-function formatTime(ts) {
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+// ===== Render =====
+function renderPhases(container, phases) {
+  const phaseOrder = ['observe', 'analyze', 'decide', 'question'];
+  const labels = {observe:'观察', analyze:'分析', decide:'决策', question:'反问'};
+  const classes = {observe:'observe', analyze:'analyze', decide:'decide', question:'question'};
+  const icons = {observe:'👁️', analyze:'🧩', decide:'⚡', question:'❓'};
+
+  const doneKeys = Object.keys(phases);
+  let phaseHtml = '<div class="phase-progress">';
+  for (const p of phaseOrder) {
+    const status = doneKeys.includes(p) ? 'done' : (doneKeys.length && phaseOrder.indexOf(p) <= doneKeys.length ? 'active' : '');
+    phaseHtml += `<div class="phase-step ${status}"><div class="dot"></div>${labels[p]}</div>`;
+    if (p !== 'question') phaseHtml += '<div class="line"></div>';
+  }
+  phaseHtml += '</div>';
+
+  let bodyHtml = '';
+  for (const p of phaseOrder) {
+    if (phases[p]) {
+      bodyHtml += `<div class="cot-phase ${classes[p]}">
+        <div class="label">${icons[p]} ${labels[p]}</div>
+        <div class="content">${escapeHtml(phases[p].text)}</div>
+      </div>`;
+    }
+  }
+
+  container.querySelector('.bubble').innerHTML = `
+    <div class="cot-block">
+      <div class="cot-header open" onclick="toggleCot(this)"><span class="arrow">▶</span> AI 思考链</div>
+      <div class="cot-body show">${phaseHtml}${bodyHtml}</div>
+    </div>
+    <div class="typing-cursor"></div>`;
 }
 
-function formatDate(ts) {
-  const d = new Date(ts * 1000);
-  return d.toLocaleDateString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+function renderResult(container, data) {
+  let html = '';
+
+  // CoT phases
+  if (data.reply) {
+    // Parse reply for CoT patterns
+    const cot = parseCoT(data.reply);
+    if (cot) {
+      html += cot;
+    } else {
+      html += `<div style="white-space:pre-wrap;">${escapeHtml(data.reply)}</div>`;
+    }
+  }
+
+  // Actions
+  if (data.actions && data.actions.length) {
+    html += '<div style="margin-top:8px;">';
+    for (const a of data.actions) {
+      const result = a.result ? (typeof a.result === 'string' ? a.result.slice(0, 80) : JSON.stringify(a.result).slice(0, 80)) : 'ok';
+      html += `<div class="tool-result">✓ <code>${a.tool}</code> → ${escapeHtml(result)}</div>`;
+    }
+    html += '</div>';
+  }
+
+  // Options
+  if (data.options && data.options.length) {
+    html += '<div class="options-row">';
+    for (const opt of data.options) {
+      html += `<span class="option-btn" onclick="sendText('${escapeAttr(opt)}')">${escapeHtml(opt)}</span>`;
+    }
+    html += '</div>';
+  }
+
+  container.querySelector('.bubble').innerHTML = html || '<div style="color:var(--text3);">收到</div>';
 }
 
+function parseCoT(text) {
+  const patterns = [
+    {key:'观察', cls:'observe', icon:'👁️'},
+    {key:'分析', cls:'analyze', icon:'🧩'},
+    {key:'决策', cls:'decide', icon:'⚡'},
+    {key:'反问', cls:'question', icon:'❓'},
+  ];
+  let found = false;
+  let html = '<div class="cot-block"><div class="cot-header open" onclick="toggleCot(this)"><span class="arrow">▶</span> AI 思考链</div><div class="cot-body show">';
+  for (const p of patterns) {
+    const re = new RegExp(p.key + '\\s*[:：]\\s*(.+?)(?:\\n|$)', 's');
+    const m = text.match(re);
+    if (m) {
+      found = true;
+      html += `<div class="cot-phase ${p.cls}"><div class="label">${p.icon} ${p.key}</div><div class="content">${escapeHtml(m[1].trim())}</div></div>`;
+    }
+  }
+  html += '</div></div>';
+  return found ? html : null;
+}
+
+function toggleCot(header) {
+  header.classList.toggle('open');
+  header.nextElementSibling.classList.toggle('show');
+}
+
+// ===== Sensor & device updates =====
 async function updateSensors() {
   const d = await fetchJSON('/api/sensors');
   const co2 = d.co2?.value;
-  document.getElementById('co2').textContent = co2 != null ? Math.round(co2) : '--';
-  document.getElementById('temp').textContent = d.temperature?.value != null ? d.temperature.value.toFixed(1) : '--';
-  document.getElementById('humid').textContent = d.humidity?.value != null ? d.humidity.value.toFixed(0) : '--';
-  document.getElementById('light').textContent = d.light?.value != null ? Math.round(d.light.value) : '--';
-
-  const present = d.motion?.value > 0.5;
-  document.getElementById('motion').textContent = present ? '👤' : '⬜';
-  document.getElementById('motionLabel').textContent = present ? '有人' : '无人';
-
-  // CO₂ 状态
-  const statusEl = document.getElementById('co2Status');
-  if (co2 != null) {
-    if (co2 > 2000) statusEl.innerHTML = '<span class="status status-critical">🔴 紧急</span>';
-    else if (co2 > 1200) statusEl.innerHTML = '<span class="status status-warn">🟠 偏高</span>';
-    else if (co2 > 800) statusEl.innerHTML = '<span class="status status-warn">🟡 注意</span>';
-    else statusEl.innerHTML = '<span class="status status-ok">🟢 正常</span>';
-  }
+  $('co2Val').textContent = co2 != null ? Math.round(co2) : '--';
+  $('tempVal').textContent = d.temperature?.value != null ? d.temperature.value.toFixed(1) : '--';
+  $('humidVal').textContent = d.humidity?.value != null ? d.humidity.value.toFixed(0) : '--';
+  $('lightVal').textContent = d.light?.value != null ? Math.round(d.light.value) : '--';
+  $('motionVal').textContent = d.motion?.value > 0.5 ? '👤 有人' : '⬜ 无人';
 }
 
 async function updateDevices() {
   const d = await fetchJSON('/api/devices');
-  document.getElementById('devFan').textContent = d.fan?.state || '--';
+  $('devFan').textContent = d.fan?.state || '--';
   const light = d.light;
-  document.getElementById('devLight').textContent = light?.state === 'on' ? `开 (${light.brightness})` : (light?.state || '--');
-  document.getElementById('devAc').textContent = d.ac?.state || '--';
-  document.getElementById('devPurifier').textContent = d.purifier?.state || '--';
+  $('devLight').textContent = light?.state === 'on' ? `开(${light.brightness})` : (light?.state || '--');
+  $('devAc').textContent = d.ac?.state || '--';
+  $('devPurifier').textContent = d.purifier?.state || '--';
 }
 
-async function updateCharts() {
-  const co2data = await fetchJSON('/api/sensor_log?sensor=co2&hours=6');
-  const tempdata = await fetchJSON('/api/sensor_log?sensor=temperature&hours=6');
-  const humidData = await fetchJSON('/api/sensor_log?sensor=humidity&hours=6');
-
-  const co2Points = co2data.slice(-60).map(p => ({ x: formatTime(p.timestamp), y: p.value }));
-  const tempPoints = tempdata.slice(-60).map(p => ({ x: formatTime(p.timestamp), y: p.value }));
-  const humidPoints = humidData.slice(-60).map(p => ({ x: formatTime(p.timestamp), y: p.value }));
-
-  chartCo2.data.labels = co2Points.map(p => p.x);
-  chartCo2.data.datasets[0].data = co2Points.map(p => p.y);
-  chartCo2.update('none');
-
-  chartTemp.data.labels = tempPoints.map(p => p.x);
-  chartTemp.data.datasets[0].data = tempPoints.map(p => p.y);
-  chartTemp.data.datasets[1].data = humidPoints.map(p => p.y);
-  chartTemp.update('none');
+async function updateStatus() {
+  const s = await fetchJSON('/api/status');
+  $('sysLlm').textContent = s.llm_loaded ? '🟢 已加载' : '🔴 未加载';
+  $('sysMode').textContent = s.mock_mode ? 'Mock' : 'Hardware';
+  $('sysTools').textContent = s.tools + '个';
 }
 
 async function loadEvents() {
-  const events = await fetchJSON('/api/events?hours=24');
-  const el = document.getElementById('eventList');
-  el.innerHTML = events.slice(0, 50).map(e =>
-    `<div class="event-item">${e.detail || e.type} <span class="event-time">${formatDate(e.timestamp)}</span></div>`
-  ).join('');
+  // Just update sidebar implicitly
 }
 
-async function loadFoods(expiring) {
-  let url = '/api/foods';
-  if (expiring) url += `?expiring=${expiring}`;
-  const foods = await fetchJSON(url);
-  const today = new Date();
-  const el = document.getElementById('foodTable');
-  el.innerHTML = foods.map(f => {
-    const expiry = new Date(f.expiry_date);
-    const daysLeft = Math.ceil((expiry - today) / (1000*86400));
-    const cls = daysLeft < 0 ? 'expired' : daysLeft <= 3 ? 'expiring' : '';
-    return `<tr class="${cls}">
-      <td>${f.name}</td><td>${f.quantity}${f.unit || ''}</td>
-      <td>${f.storage}</td>
-      <td>${f.expiry_date} ${daysLeft < 0 ? '(已过期)' : daysLeft <= 3 ? `(剩${daysLeft}天)` : ''}</td>
-      <td><button class="btn btn-sm btn-danger" onclick="removeFood(${f.id})">删</button></td>
-    </tr>`;
-  }).join('');
-}
+// ===== Poll =====
+setInterval(updateSensors, 3000);
+setInterval(updateDevices, 5000);
+setInterval(updateStatus, 10000);
+setInterval(pollQuestion, 5000);
 
-async function addFood() {
-  const name = document.getElementById('foodName').value;
-  const expiry = document.getElementById('foodExpiry').value;
-  const storage = document.getElementById('foodStorage').value;
-  const qty = document.getElementById('foodQty').value;
-  if (!name || !expiry) return alert('请填写食材名称和到期日');
-  await fetch('/api/foods/add', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name, expiry_date: expiry, storage, quantity: parseInt(qty)}),
-  });
-  document.getElementById('foodName').value = '';
-  loadFoods();
-}
+// Initial
+updateSensors();
+updateDevices();
+updateStatus();
 
-async function removeFood(id) {
-  await fetch('/api/foods/remove', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({id}),
-  });
-  loadFoods();
-}
-
-async function sendCommand() {
-  const input = document.getElementById('cmdInput');
-  const text = input.value.trim();
-  if (!text) return;
-  const r = await fetch('/api/command', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({text}),
-  });
-  const data = await r.json();
-  document.getElementById('cmdReply').innerHTML = `<div style="color:#94a3b8">你: ${text}</div>
-    <div style="margin-top:8px; color:#6ee7b7">Agent: ${data.reply}</div>`;
-  input.value = '';
-  loadEvents();
-}
-
-// ===== AI反问轮询 (v5.1) =====
+// ===== Question polling =====
 async function pollQuestion() {
   const q = await fetchJSON('/api/pending_question');
-  const box = document.getElementById('questionBox');
-  if (!q || !q.text) {
-    box.style.display = 'none';
-    return;
-  }
-  document.getElementById('questionText').textContent = q.text;
-  const icon = document.getElementById('questionIcon');
+  if (!q || !q.text) return;
+  const chat = $('chatContainer');
+  const empty = $('chatEmpty');
+  if (empty) empty.style.display = 'none';
+
+  // Check if already showing
+  const existing = chat.querySelector('[data-qid]');
+  if (existing) return;
+
   const qType = q.type || '';
-  if (qType === 'clarification') icon.textContent = '❓';
-  else if (qType === 'proactive_suggestion') icon.textContent = '💡';
-  else icon.textContent = '🤔';
-  const actions = document.getElementById('questionActions');
-  const opts = q.options || ['是', '不用'];
-  actions.innerHTML = opts.map((opt, i) =>
-    `<button class="btn btn-sm ${i===0?'btn-success':'btn-danger'}" onclick="answerQuestion('${opt}')">${opt}</button>`
-  ).join(' ');
-  box.style.display = 'block';
+  const icon = qType === 'clarification' ? '❓' : qType === 'proactive_suggestion' ? '💡' : '🤔';
+  const msg = document.createElement('div');
+  msg.className = 'msg agent';
+  msg.setAttribute('data-qid', Date.now());
+  let optHtml = '';
+  if (q.options && q.options.length) {
+    optHtml = '<div class="options-row">' + q.options.map((opt, i) =>
+      `<span class="option-btn ${i===0?'':'style="border-color:var(--border)"'}" onclick="answerQuestion('${escapeAttr(opt)}', this.parentElement.parentElement.parentElement)">${escapeHtml(opt)}</span>`
+    ).join('') + '</div>';
+  }
+  msg.innerHTML = `<div class="avatar">${icon}</div>
+    <div class="bubble">
+      <div style="white-space:pre-wrap; margin-bottom:4px;">${escapeHtml(q.text)}</div>
+      ${optHtml}
+    </div>`;
+  chat.appendChild(msg);
+  chat.scrollTop = chat.scrollHeight;
 }
 
-async function answerQuestion(answer) {
+async function answerQuestion(answer, msgEl) {
   await fetch('/api/answer_question', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({answer}),
   });
-  document.getElementById('questionBox').style.display = 'none';
+  // Replace options with selected answer
+  const bubble = msgEl.querySelector('.bubble');
+  const optsRow = bubble.querySelector('.options-row');
+  if (optsRow) optsRow.innerHTML = `<div style="font-size:11px; color:var(--text3); margin-top:4px;">→ 已选: ${escapeHtml(answer)}</div>`;
   loadEvents();
 }
 
-// ===== 用户画像 =====
-async function loadProfile() {
-  const p = await fetchJSON('/api/profile');
-  const dims = p.dimensions || {};
-  const cards = document.getElementById('profileCards');
-  if (!Object.keys(dims).length) {
-    cards.innerHTML = '<div style="color:#94a3b8; font-size:13px;">暂无数据，交互越多画像越丰富</div>';
-    return;
-  }
-  const labels = {
-    active_hours: '活跃时段', agent_usage: 'Agent使用', command_length: '指令风格',
-    temp_preference: '温度偏好', scene_frequency: '场景频次'
-  };
-  cards.innerHTML = Object.entries(dims).map(([k, v]) => {
-    let val = '';
-    if (k === 'command_length' && typeof v.value === 'object') {
-      val = `平均${v.value.avg}字，最长${v.value.max}字 (${v.samples}样本)`;
-    } else if (k === 'active_hours' && typeof v.value === 'object') {
-      const top = Object.entries(v.value).sort((a,b) => b[1]-a[1]).slice(0,3).map(e => `${e[0]}时`).join(',');
-      val = top || '未检测到规律';
-    } else if (typeof v.value === 'object') {
-      val = JSON.stringify(v.value).slice(0, 80);
-    } else val = String(v.value);
-    return `<div class="card" style="min-height:auto; padding:12px;">
-      <div class="label">${labels[k]||k}</div>
-      <div style="font-size:13px; margin-top:4px; color:#e2e8f0;">${val}</div>
-      <div style="font-size:10px; color:#64748b;">可信度: ${(v.confidence*100).toFixed(0)}%</div>
-    </div>`;
-  }).join('');
+// ===== Utility =====
+function escapeHtml(s) {
+  if (!s) return '';
+  s = String(s);
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-
-async function loadRoutines() {
-  const routines = await fetchJSON('/api/routines');
-  const tbody = document.getElementById('routineTable');
-  if (!routines.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:#94a3b8;">暂无规律，使用一段时间后自动发现</td></tr>';
-    return;
-  }
-  tbody.innerHTML = routines.map(r => {
-    const auto = r.auto_detected ? '🤖自动' : '✋手动';
-    const enabled = r.enabled ? '🟢启用' : '🔴禁用';
-    const conf = (r.confidence*100).toFixed(0);
-    return `<tr><td>${r.name}</td><td>${auto}</td><td>${conf}%</td><td>${enabled}</td></tr>`;
-  }).join('');
+function escapeAttr(s) {
+  return String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;');
 }
-
-async function detectRoutines() {
-  const r = await fetch('/api/routines/detect', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({}),
-  });
-  const data = await r.json();
-  loadRoutines();
-  alert(`发现 ${data.detected.length} 个新规律`);
-}
-
-// ===== 定时刷新 =====
-setInterval(pollQuestion, 5000);
-setInterval(updateSensors, 3000);
-setInterval(updateDevices, 5000);
-setInterval(loadEvents, 10000);
-setInterval(loadFoods, 15000);
-setInterval(updateCharts, 30000);
-setInterval(loadProfile, 60000);
-setInterval(loadRoutines, 60000);
-
-// 首次加载
-updateSensors(); updateDevices(); loadEvents(); loadFoods();
-loadProfile(); loadRoutines();
-setTimeout(updateCharts, 1000);
 </script>
 </body>
 </html>

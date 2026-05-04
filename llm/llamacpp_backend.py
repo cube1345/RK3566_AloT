@@ -81,3 +81,30 @@ class LlamaCppBackend:
         self._queue.put((messages, result_holder, result_event))
         result_event.wait()
         return result_holder["output"]
+
+    def generate_stream(self, prompt: str, system: str = ""):
+        """流式生成, yield token块"""
+        if not self._model:
+            yield ""
+            return
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        try:
+            stream = self._model.create_chat_completion(
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                stop=["<|im_end|>", "<|endoftext|>"],
+                stream=True,
+            )
+            for chunk in stream:
+                choices = chunk.get("choices", [])
+                if choices and choices[0].get("delta", {}).get("content"):
+                    yield choices[0]["delta"]["content"]
+        except Exception as e:
+            logger.error("流式推理失败: %s", e)
+            yield ""
