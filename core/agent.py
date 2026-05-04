@@ -416,7 +416,7 @@ class AgentOrchestrator:
 
         def _read_pin():
             """读取 GPIO 电平, 返回 0/1 或 None"""
-            nonlocal _request, _line, _sysfs_path
+            nonlocal _request, _line, _sysfs_path, _gpiod_v2, _gpiod_v1
             # gpiod v2
             if _gpiod_v2 and _request:
                 try:
