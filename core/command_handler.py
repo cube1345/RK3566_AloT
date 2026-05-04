@@ -390,18 +390,18 @@ class CommandHandler:
         self, agent: str, actions: list[dict], text: str, llm_used: bool,
         llm_raw: str = "",
     ) -> str:
+        # 优先从CoT输出提取"分析"作为自然语言回复
+        if llm_raw:
+            cot_reply = _parse_cot_reply(llm_raw)
+            if cot_reply:
+                return cot_reply
+
         if actions:
             parts = []
             for a in actions:
                 r = a.get("result", "")
                 parts.append(f"{a['tool']}: {r}" if r else a["tool"])
             return "\n".join(parts)
-
-        # 尝试从CoT输出提取分析作为回复
-        if llm_raw:
-            cot_reply = _parse_cot_reply(llm_raw)
-            if cot_reply:
-                return cot_reply
 
         # 无工具调用: 纯 LLM 对话
         if llm_used:
