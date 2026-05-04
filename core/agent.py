@@ -428,14 +428,13 @@ class AgentOrchestrator:
                     )
                     logger.info("门铃 GPIO (gpiod v2): %s pin %d", GPIO_CHIP, pin)
                     while self._running:
-                        edges = request.read_edge_events(timedelta(seconds=1))
-                        for ev in edges:
-                            now = time.time()
-                            if now - last_trigger > _DEBOUNCE_S:
-                                last_trigger = now
-                                self._doorbell_trigger()
-                        if not edges:
-                            await asyncio.sleep(0)
+                        if request.wait_edge_events(timedelta(seconds=1)):
+                            for ev in request.read_edge_events():
+                                now = time.time()
+                                if now - last_trigger > _DEBOUNCE_S:
+                                    last_trigger = now
+                                    self._doorbell_trigger()
+                        await asyncio.sleep(0)
                 except Exception as e:
                     logger.warning("gpiod v2 门铃失败: %s", e)
                     request = None
